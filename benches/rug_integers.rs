@@ -5,8 +5,7 @@ use crypto_bigint::{
     modular::{BoxedMontyForm, BoxedMontyParams},
     BoxedUint,
 };
-use rand::rngs::OsRng;
-use rsa::{traits::PublicKeyParts, RsaPrivateKey, RsaPublicKey};
+use rsa::{rand_core::OsRng, traits::PublicKeyParts, RsaPrivateKey, RsaPublicKey};
 use rug::{integer::Order, Integer};
 
 fn setup() -> (RsaPublicKey, BoxedMontyForm) {

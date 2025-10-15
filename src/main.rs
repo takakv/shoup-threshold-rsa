@@ -8,7 +8,7 @@ use crypto_bigint::{
     modular::{BoxedMontyForm, BoxedMontyParams},
     BoxedUint,
 };
-use rand::{rngs::OsRng, RngCore};
+use rand::{rngs::OsRng, TryRngCore};
 use rasn::{
     types::{IntegerType, OctetString}, AsnType, Decode, Decoder,
     Encode,
@@ -47,10 +47,13 @@ pub struct SignatureShare {
 
 fn i2osp(i: Integer, len: usize) -> Vec<u8> {
     let octets = &i.to_digits::<u8>(Order::Msf);
+    if octets.len() > len {
+        panic!("integer too large to encode in {} bytes", len);
+    }
 
     let mut out = vec![0u8; len];
     out[len - octets.len()..].copy_from_slice(octets);
-    octets.to_vec()
+    out
 }
 
 fn mgf1<D>(seed: &[u8], mask_len: usize) -> Vec<u8>
@@ -66,33 +69,28 @@ where
     }
 
     let mut hasher = D::new();
-    let mut buf_i = [0u8; 4];
-    let mut h_buf = vec![0u8; h_len];
 
     // 2. Let T be the empty octet string.
     let ceiling = (mask_len + h_len - 1) / h_len;
-    let mut t = vec![0u8; h_len * ceiling]; // Account for a potential margin.
+    let mut t = Vec::with_capacity(h_len * ceiling);
 
     // 3. For counter from 0 to \ceil (maskLen / hLen) - 1, do the
     //    following:
     for i in 0..ceiling as u32 {
         // A.  Convert counter to an octet string C of length 4 octets:
         //        C = I2OSP (counter, 4) .
-        buf_i.copy_from_slice(&i.to_be_bytes());
-
+        //
         // B. Concatenate the hash of the seed mgfSeed and C to the octet
         //    string T:
         //       T = T || Hash(mgfSeed || C) .
         Digest::update(&mut hasher, seed);
-        Digest::update(&mut hasher, &buf_i);
-        h_buf.copy_from_slice(&hasher.finalize_reset());
-
-        let start_index = (i as usize) * h_len;
-        t[start_index..start_index + h_len].copy_from_slice(&h_buf);
+        Digest::update(&mut hasher, &i.to_be_bytes());
+        t.extend_from_slice(&hasher.finalize_reset());
     }
 
     // 4. Output the leading maskLen octets of T as the octet string mask.
-    t[..mask_len].to_vec()
+    t.truncate(mask_len);
+    t
 }
 
 fn emsa_pss_encode<D>(message: &[u8], em_bits: usize) -> Vec<u8>
@@ -114,7 +112,9 @@ where
     // 4. Generate a random octet string salt of length sLen; if sLen =
     //    0, then salt is the empty string.
     let mut salt = vec![0u8; s_len];
-    OsRng.fill_bytes(&mut salt);
+    OsRng
+        .try_fill_bytes(&mut salt)
+        .expect("Could not generate PSS salt");
 
     // 5. Let
     //       M' = (0x)00 00 00 00 00 00 00 00 || mHash || salt;
@@ -131,12 +131,13 @@ where
     // 7. Generate an octet string PS consisting of emLen - sLen - hLen
     //    - 2 zero octets.  The length of PS may be 0.
     let ps = vec![0u8; em_len - s_len - h_len - 2];
+    let ps_len = ps.len();
 
     // 8. Let DB = PS || 0x01 || salt; DB is an octet string of length
     //    emLen - hLen - 1.
     let mut db = vec![0u8; em_len - h_len - 1];
-    db[ps.len()] = 0x01;
-    db[em_len - s_len - h_len - 1..].copy_from_slice(&salt);
+    db[ps_len] = 0x01;
+    db[ps_len + 1..].copy_from_slice(&salt);
 
     // 9. Let dbMask = MGF(H, emLen - hLen - 1).
     let db_mask = mgf1::<D>(&h, em_len - h_len - 1);
@@ -149,10 +150,10 @@ where
     masked_db[0] &= 0xFF >> (8 * em_len - em_bits);
 
     // 12. Let EM = maskedDB || H || 0xbc.
-    let mut em = vec![0u8; em_len];
-    em[..masked_db.len()].copy_from_slice(&masked_db);
-    em[masked_db.len()..em_len - 1].copy_from_slice(&h);
-    em[em_len - 1] = 0xbc;
+    let mut em = Vec::with_capacity(em_len);
+    em.extend_from_slice(&masked_db);
+    em.extend_from_slice(&h);
+    em.push(0xbc);
 
     // 13. Output EM.
     em
