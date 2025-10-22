@@ -56,41 +56,34 @@ fn i2osp(i: Integer, len: usize) -> Vec<u8> {
     out
 }
 
-fn mgf1<D>(seed: &[u8], mask_len: usize) -> Vec<u8>
+fn mgf1_xor_digest<D>(out: &mut [u8], hasher: &mut D, seed: &[u8])
 where
     D: Digest + FixedOutputReset,
 {
     let h_len = <D as Digest>::output_size();
-    const MAX: usize = u32::MAX as usize + 1;
 
-    // 1. If maskLen > 2^32 hLen, output "mask too long" and stop.
-    if mask_len > h_len * MAX {
-        panic!("mask too long");
+    // RFC 8017 requires that maskLen <= 2^32 hLen.
+    // Indeed, otherwise the 4-byte counter will overflow.
+    assert!(h_len <= u32::MAX as usize);
+    assert!(out.len() as u64 <= (h_len as u64) << 32);
+
+    let mut counter = 0u32;
+
+    let mut i = 0;
+    while i < out.len() {
+        Digest::update(hasher, seed);
+        Digest::update(hasher, &counter.to_be_bytes());
+
+        let digest = hasher.finalize_reset();
+
+        let mut j = 0;
+        while j < h_len && i < out.len() {
+            out[i] ^= digest[j];
+            i += 1;
+            j += 1;
+        }
+        counter += 1;
     }
-
-    let mut hasher = D::new();
-
-    // 2. Let T be the empty octet string.
-    let ceiling = (mask_len + h_len - 1) / h_len;
-    let mut t = Vec::with_capacity(h_len * ceiling);
-
-    // 3. For counter from 0 to \ceil (maskLen / hLen) - 1, do the
-    //    following:
-    for i in 0..ceiling as u32 {
-        // A.  Convert counter to an octet string C of length 4 octets:
-        //        C = I2OSP (counter, 4) .
-        //
-        // B. Concatenate the hash of the seed mgfSeed and C to the octet
-        //    string T:
-        //       T = T || Hash(mgfSeed || C) .
-        Digest::update(&mut hasher, seed);
-        Digest::update(&mut hasher, &i.to_be_bytes());
-        t.extend_from_slice(&hasher.finalize_reset());
-    }
-
-    // 4. Output the leading maskLen octets of T as the octet string mask.
-    t.truncate(mask_len);
-    t
 }
 
 fn emsa_pss_encode<D>(message: &[u8], em_bits: usize) -> Vec<u8>
@@ -139,19 +132,17 @@ where
     db[ps_len] = 0x01;
     db[ps_len + 1..].copy_from_slice(&salt);
 
-    // 9. Let dbMask = MGF(H, emLen - hLen - 1).
-    let db_mask = mgf1::<D>(&h, em_len - h_len - 1);
-
+    // 9.  Let dbMask = MGF(H, emLen - hLen - 1).
     // 10. Let maskedDB = DB \xor dbMask.
-    let mut masked_db: Vec<u8> = db.iter().zip(db_mask.iter()).map(|(x, y)| x ^ y).collect();
+    mgf1_xor_digest(db.as_mut_slice(), &mut hasher, &h);
 
     // 11. Set the leftmost 8emLen - emBits bits of the leftmost octet
     //     in maskedDB to zero.
-    masked_db[0] &= 0xFF >> (8 * em_len - em_bits);
+    db[0] &= 0xFF >> (8 * em_len - em_bits);
 
     // 12. Let EM = maskedDB || H || 0xbc.
     let mut em = Vec::with_capacity(em_len);
-    em.extend_from_slice(&masked_db);
+    em.extend_from_slice(&db);
     em.extend_from_slice(&h);
     em.push(0xbc);
 
