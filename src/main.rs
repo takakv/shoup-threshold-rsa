@@ -105,7 +105,7 @@ fn build_proof(
     let c = BoxedUint::from_be_slice(&c, ctx.challenge_len_bits).unwrap();
 
     // Response
-    let z = ss.clone().mul(&c).add(&r);
+    let z = ss.mul(&c).add(&r);
 
     Proof {
         key_commitment: v_prime,
@@ -115,16 +115,26 @@ fn build_proof(
     }
 }
 
-fn threshold_sign(key_shares: &[KeyShare], pk: RsaPublicKey, msg: &[u8]) -> Vec<u8> {
+fn threshold_sign(
+    key_shares: &[KeyShare],
+    threshold: u16,
+    total_shares: u16,
+    pk: RsaPublicKey,
+    msg: &[u8],
+) -> Vec<u8> {
+    assert!(threshold <= total_shares);
+
+    if key_shares.len() < threshold as usize {
+        panic!("not enough secret shares");
+    }
+
     let em_bits = pk.n().bits() - 1;
     let em = emsa_pss_encode::<Sha256>(&msg, em_bits);
     let m = os2ip_montgomery(&em, monty_params_from_rsa_modulus(pk.n()));
 
     let n = Integer::from_digits(m.params().modulus().as_words(), Order::Lsf);
 
-    let total_shares = 5;
-    let delta = shoup_delta(total_shares);
-
+    let delta = shoup_delta(total_shares as u32);
     let provable = true;
 
     // This is used for the constant-time exponentiation, so it must be a BoxedUInt.
@@ -298,6 +308,6 @@ fn main() {
     let entries = fs::read_dir(&shares_dir).expect("Failed to list shares directory");
     let key_shares = load_key_shares(entries);
 
-    let signature = threshold_sign(&key_shares, pubkey, &msg);
+    let signature = threshold_sign(&key_shares, 3, 5, pubkey, &msg);
     fs::write(&out_path, &signature).expect("Failed to write signature to file");
 }
