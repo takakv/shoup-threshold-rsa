@@ -4,36 +4,21 @@ use std::{
     path::PathBuf,
 };
 
-use crypto_bigint::{
-    modular::{BoxedMontyForm, BoxedMontyParams}, BoxedUint,
-    Word,
-};
-use rand::{rngs::OsRng, TryRngCore};
-use rasn::{
-    types::{IntegerType, OctetString}, AsnType, Decode, Decoder,
-    Encode,
-};
-use rsa::{
-    pkcs8::DecodePublicKey, signature::digest::{Digest, FixedOutputReset},
-    traits::PublicKeyParts,
-    BigUint,
-    RsaPublicKey,
-};
-use rug::{integer::Order, ops::Pow, Complete, Integer};
+use crypto_bigint::{BoxedUint, Word};
+use rasn::types::IntegerType;
+use rsa::{pkcs8::DecodePublicKey, traits::PublicKeyParts, RsaPublicKey};
+use rug::{integer::Order, ops::Pow, Integer};
 use sha2::Sha256;
 
-#[derive(Debug, Clone, AsnType, Encode, Decode)]
-pub struct ShamirSecretShare {
-    pub share_index: OctetString,
-    pub secret_share: OctetString,
-}
+mod arithmetic;
+mod asn1;
+mod convert;
+mod pss;
 
-#[derive(Debug, Clone, AsnType, Encode, Decode)]
-pub struct ShoupKeyShare {
-    pub n: rasn::types::Integer,
-    pub e: rasn::types::Integer,
-    pub d: rasn::types::Integer,
-}
+use arithmetic::{shoup_0_coefficient, shoup_delta};
+use asn1::{ShamirSecretShare, ShoupKeyShare};
+use convert::{i2osp, monty_params_from_rsa_modulus, os2ip_montgomery};
+use pss::emsa_pss_encode;
 
 pub struct KeyShare {
     pub index: u32,
@@ -43,149 +28,6 @@ pub struct KeyShare {
 pub struct SignatureShare {
     pub index: u32,
     pub signature: Integer,
-}
-
-fn i2osp(i: Integer, len: usize) -> Vec<u8> {
-    let octets = &i.to_digits::<u8>(Order::Msf);
-    if octets.len() > len {
-        panic!("integer too large to encode in {} bytes", len);
-    }
-
-    let mut out = vec![0u8; len];
-    out[len - octets.len()..].copy_from_slice(octets);
-    out
-}
-
-fn mgf1_xor_digest<D>(out: &mut [u8], hasher: &mut D, seed: &[u8])
-where
-    D: Digest + FixedOutputReset,
-{
-    let h_len = <D as Digest>::output_size();
-
-    // RFC 8017 requires that maskLen <= 2^32 hLen.
-    // Indeed, otherwise the 4-byte counter will overflow.
-    assert!(h_len <= u32::MAX as usize);
-    assert!(out.len() as u64 <= (h_len as u64) << 32);
-
-    let mut counter = 0u32;
-
-    let mut i = 0;
-    while i < out.len() {
-        Digest::update(hasher, seed);
-        Digest::update(hasher, &counter.to_be_bytes());
-
-        let digest = hasher.finalize_reset();
-
-        let mut j = 0;
-        while j < h_len && i < out.len() {
-            out[i] ^= digest[j];
-            i += 1;
-            j += 1;
-        }
-        counter += 1;
-    }
-}
-
-fn emsa_pss_encode<D>(message: &[u8], em_bits: usize) -> Vec<u8>
-where
-    D: Digest + FixedOutputReset,
-{
-    let h_len = <D as Digest>::output_size();
-    let s_len = h_len; // Use the same hash function for the message and MGF1.
-    let em_len = (em_bits + 7) / 8;
-
-    // 2. Let mHash = Hash(M), an octet string of length hLen.
-    let m_hash = D::new_with_prefix(message).finalize();
-
-    // 3. If emLen < hLen + sLen + 2, output "encoding error" and stop.
-    if em_len < h_len + s_len + 2 {
-        panic!("encoding error");
-    }
-
-    // 4. Generate a random octet string salt of length sLen; if sLen =
-    //    0, then salt is the empty string.
-    let mut salt = vec![0u8; s_len];
-    OsRng
-        .try_fill_bytes(&mut salt)
-        .expect("Could not generate PSS salt");
-
-    // 5. Let
-    //       M' = (0x)00 00 00 00 00 00 00 00 || mHash || salt;
-    //    M' is an octet string of length 8 + hLen + sLen with eight
-    //    initial zero octets.
-    //
-    // 6. Let H = Hash(M'), an octet string of length hLen.
-    let mut hasher = D::new();
-    Digest::update(&mut hasher, vec![0u8; 8]);
-    Digest::update(&mut hasher, m_hash);
-    Digest::update(&mut hasher, salt.clone());
-    let h = hasher.finalize_reset();
-
-    // 7. Generate an octet string PS consisting of emLen - sLen - hLen
-    //    - 2 zero octets.  The length of PS may be 0.
-    let ps = vec![0u8; em_len - s_len - h_len - 2];
-    let ps_len = ps.len();
-
-    // 8. Let DB = PS || 0x01 || salt; DB is an octet string of length
-    //    emLen - hLen - 1.
-    let mut db = vec![0u8; em_len - h_len - 1];
-    db[ps_len] = 0x01;
-    db[ps_len + 1..].copy_from_slice(&salt);
-
-    // 9.  Let dbMask = MGF(H, emLen - hLen - 1).
-    // 10. Let maskedDB = DB \xor dbMask.
-    mgf1_xor_digest(db.as_mut_slice(), &mut hasher, &h);
-
-    // 11. Set the leftmost 8emLen - emBits bits of the leftmost octet
-    //     in maskedDB to zero.
-    db[0] &= 0xFF >> (8 * em_len - em_bits);
-
-    // 12. Let EM = maskedDB || H || 0xbc.
-    let mut em = Vec::with_capacity(em_len);
-    em.extend_from_slice(&db);
-    em.extend_from_slice(&h);
-    em.push(0xbc);
-
-    // 13. Output EM.
-    em
-}
-
-fn monty_params_from_rsa_modulus(n: &BigUint) -> BoxedMontyParams {
-    let n_bytes = n.to_bytes_be();
-    let n = BoxedUint::from_be_slice(&n_bytes, n.bits() as u32)
-        .expect("Failed to build BoxedUint from modulus");
-    let n = n.to_odd().expect("RSA modulus is not odd");
-    BoxedMontyParams::new(n)
-}
-
-fn os2ip_montgomery(octets: &[u8], mp: BoxedMontyParams) -> BoxedMontyForm {
-    let ui = BoxedUint::from_be_slice(octets, mp.modulus().bits())
-        .expect("Failed to build BoxedUint from octets");
-    BoxedMontyForm::new(ui, mp)
-}
-
-fn shoup_delta(f: u32) -> Integer {
-    Integer::factorial(f).complete()
-}
-
-fn lagrange_0_coefficient(current: i64, indices: Vec<i64>) -> Integer {
-    let mut nominator = Integer::from(1);
-    let mut denominator = Integer::from(1);
-
-    for index in indices {
-        if current == index {
-            continue;
-        }
-
-        nominator.mul_assign(index);
-        denominator.mul_assign(index - current);
-    }
-
-    nominator.div_exact(&denominator)
-}
-
-fn shoup_0_coefficient(current: i64, indices: Vec<i64>, shoup_delta: &Integer) -> Integer {
-    shoup_delta * lagrange_0_coefficient(current, indices)
 }
 
 fn threshold_sign(key_shares: &[KeyShare], pk: RsaPublicKey, msg: &[u8]) -> Vec<u8> {
