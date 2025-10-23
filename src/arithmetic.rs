@@ -5,12 +5,12 @@ pub fn shoup_delta(f: u32) -> rug::Integer {
     rug::Integer::factorial(f).complete()
 }
 
-fn lagrange_0_coefficient(current: i64, indices: Vec<i64>) -> rug::Integer {
+fn lagrange_0_coefficient(current: i32, indices: &[i32]) -> rug::Integer {
     let mut nominator = rug::Integer::from(1);
     let mut denominator = rug::Integer::from(1);
 
     for index in indices {
-        if current == index {
+        if current == *index {
             continue;
         }
 
@@ -22,9 +22,9 @@ fn lagrange_0_coefficient(current: i64, indices: Vec<i64>) -> rug::Integer {
 }
 
 pub fn shoup_0_coefficient(
-    current: i64,
-    indices: Vec<i64>,
+    current: u16,
+    indices: &[i32],
     shoup_delta: &rug::Integer,
 ) -> rug::Integer {
-    shoup_delta * lagrange_0_coefficient(current, indices)
+    shoup_delta * lagrange_0_coefficient(current as i32, indices)
 }

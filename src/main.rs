@@ -179,12 +179,14 @@ fn threshold_sign(key_shares: &[KeyShare], pk: RsaPublicKey, msg: &[u8]) -> Vec<
 
         let index = key_share.index;
         signature_shares.push(SignatureShare { index, signature });
-        lagrange_indices.push(index as i64);
+        // Use i32 to simplify subtractions when computing the coefficients of the Lagrange polynomial.
+        // u16 always fits within i32.
+        lagrange_indices.push(index as i32);
     }
 
     let mut w = Integer::from(1);
     for share in signature_shares {
-        let sc = shoup_0_coefficient(share.index as i64, lagrange_indices.clone(), &delta);
+        let sc = shoup_0_coefficient(share.index, &lagrange_indices, &delta);
         let sc = if provable { sc * 2 } else { sc };
 
         let term = share.signature.pow_mod(&Integer::from(sc), &n).unwrap();
