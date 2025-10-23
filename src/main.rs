@@ -5,8 +5,8 @@ use std::{
 };
 
 use crypto_bigint::{
-    modular::{BoxedMontyForm, BoxedMontyParams},
-    BoxedUint,
+    modular::{BoxedMontyForm, BoxedMontyParams}, BoxedUint,
+    Word,
 };
 use rand::{rngs::OsRng, TryRngCore};
 use rasn::{
@@ -19,7 +19,7 @@ use rsa::{
     BigUint,
     RsaPublicKey,
 };
-use rug::{integer::Order, Integer};
+use rug::{integer::Order, ops::Pow, Complete, Integer};
 use sha2::Sha256;
 
 #[derive(Debug, Clone, AsnType, Encode, Decode)]
@@ -164,27 +164,27 @@ fn os2ip_montgomery(octets: &[u8], mp: BoxedMontyParams) -> BoxedMontyForm {
     BoxedMontyForm::new(ui, mp)
 }
 
-fn shoup_delta(n: i64) -> i64 {
-    (1..=n).product()
+fn shoup_delta(f: u32) -> Integer {
+    Integer::factorial(f).complete()
 }
 
-fn lagrange_0_coefficient(current: i64, indices: Vec<i64>) -> i64 {
-    let mut nominator: i64 = 1;
-    let mut denominator: i64 = 1;
+fn lagrange_0_coefficient(current: i64, indices: Vec<i64>) -> Integer {
+    let mut nominator = Integer::from(1);
+    let mut denominator = Integer::from(1);
 
     for index in indices {
         if current == index {
             continue;
         }
 
-        nominator *= index;
-        denominator *= index - current;
+        nominator.mul_assign(index);
+        denominator.mul_assign(index - current);
     }
 
-    nominator / denominator
+    nominator.div_exact(&denominator)
 }
 
-fn shoup_0_coefficient(current: i64, indices: Vec<i64>, shoup_delta: i64) -> i64 {
+fn shoup_0_coefficient(current: i64, indices: Vec<i64>, shoup_delta: &Integer) -> Integer {
     shoup_delta * lagrange_0_coefficient(current, indices)
 }
 
@@ -193,11 +193,33 @@ fn threshold_sign(key_shares: &[KeyShare], pk: RsaPublicKey, msg: &[u8]) -> Vec<
     let em = emsa_pss_encode::<Sha256>(&msg, em_bits);
     let m = os2ip_montgomery(&em, monty_params_from_rsa_modulus(pk.n()));
 
+    let n = Integer::from_digits(m.params().modulus().as_words(), Order::Lsf);
+
+    let total_shares = 5;
+    let delta = shoup_delta(total_shares);
+
+    let provable = true;
+
+    // This is used for the constant-time exponentiation, so it must be a BoxedUInt.
+    let double_delta = if provable {
+        let mut dd = delta.clone().mul(2) as Integer;
+        if delta < Integer::ZERO {
+            dd.invert_mut(&n).unwrap();
+        }
+        BoxedUint::from_words(dd.to_digits::<Word>(Order::Msf))
+    } else {
+        BoxedUint::zero()
+    };
+
     let mut signature_shares = Vec::with_capacity(key_shares.len());
     let mut lagrange_indices = Vec::with_capacity(key_shares.len());
 
     for key_share in key_shares {
-        let signature = m.pow(&key_share.d);
+        let signature = if provable {
+            m.pow(&key_share.d.clone().mul(&double_delta))
+        } else {
+            m.pow(&key_share.d)
+        };
 
         // There are no more secrets here, so we switch to a more performant bignum library.
         // TODO: consider whether to use Rug for everything, and use `secure_pow_mod` for RSA.
@@ -208,21 +230,18 @@ fn threshold_sign(key_shares: &[KeyShare], pk: RsaPublicKey, msg: &[u8]) -> Vec<
         lagrange_indices.push(index as i64);
     }
 
-    let total_shares: i64 = 5;
-    let delta = shoup_delta(total_shares);
-
     let mut w = Integer::from(1);
-    let n = Integer::from_digits(m.params().modulus().as_words(), Order::Lsf);
-
     for share in signature_shares {
-        let sc = shoup_0_coefficient(share.index as i64, lagrange_indices.clone(), delta);
+        let sc = shoup_0_coefficient(share.index as i64, lagrange_indices.clone(), &delta);
+        let sc = if provable { sc * 2 } else { sc };
 
         let term = share.signature.pow_mod(&Integer::from(sc), &n).unwrap();
         w.mul_assign(&term);
         w.modulo_mut(&n);
     }
 
-    let shoup_exp = Integer::from(delta);
+    let shoup_exp = if provable { delta.pow(2).mul(4) } else { delta };
+
     let pub_exp = Integer::from_digits(&pk.e().to_bytes_le(), Order::Lsf);
     let (_, a, b) = shoup_exp.extended_gcd(pub_exp, Integer::new());
 
