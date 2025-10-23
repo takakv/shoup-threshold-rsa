@@ -14,3 +14,14 @@ pub struct ShoupKeyShare {
     pub e: rasn::types::Integer,
     pub d: rasn::types::Integer,
 }
+
+#[derive(Debug, Clone, AsnType, Encode, Decode)]
+pub struct ShoupVerificationKey {
+    pub vk: rasn::types::Integer,
+}
+
+#[derive(Debug, Clone, AsnType, Encode, Decode)]
+pub struct ShoupVerifyShare {
+    pub share_index: OctetString,
+    pub public_share: rasn::types::Integer,
+}
