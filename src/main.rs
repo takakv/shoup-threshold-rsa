@@ -11,7 +11,7 @@ use crypto_bigint::{
 };
 use rasn::types::IntegerType;
 use rsa::{pkcs8::DecodePublicKey, traits::PublicKeyParts, RsaPublicKey};
-use rug::{integer::Order, ops::Pow, Integer};
+use rug::{integer::Order, Integer};
 use sha2::{Digest, Sha256};
 
 mod arithmetic;
@@ -36,7 +36,7 @@ pub struct VerifyShare {
 
 pub struct SignatureShare {
     pub index: u16,
-    pub signature: BoxedMontyForm,
+    pub signature: Integer,
 }
 
 struct ProofContext {
@@ -67,8 +67,7 @@ fn build_proof_context(m: &BoxedMontyForm, dd: &BoxedUint) -> ProofContext {
 
     let vk_shares = fs::read_dir(&vk_shares_dir).expect("Failed to list shares directory");
 
-    let two = BoxedUint::from(2u8);
-    let message_witness = m.pow(&dd.mul(&two));
+    let message_witness = m.pow(&dd.mul(&BoxedUint::from(2u8)));
 
     let challenge_len_bits = 8 * <Sha256>::output_size() as u32;
 
@@ -99,7 +98,7 @@ fn build_proof(
         .chain_update(&ctx.verification_key_bytes)
         .chain_update(&ctx.message_witness_bytes)
         .chain_update(vk.to_be_bytes())
-        .chain_update(&signature.square().retrieve().to_be_bytes())
+        .chain_update(signature.square().retrieve().to_be_bytes())
         .chain_update(v_prime.retrieve().to_be_bytes())
         .chain_update(x_prime.retrieve().to_be_bytes())
         .finalize();
@@ -130,80 +129,74 @@ fn threshold_sign(key_shares: &[KeyShare], pk: RsaPublicKey, msg: &[u8]) -> Vec<
 
     // This is used for the constant-time exponentiation, so it must be a BoxedUInt.
     let double_delta = if provable {
-        let mut dd = delta.clone().mul(2) as Integer;
-        if delta < Integer::ZERO {
-            dd.invert_mut(&n).unwrap();
-        }
+        let dd = delta.clone().mul(2) as Integer;
         BoxedUint::from_words(dd.to_digits::<Word>(Order::Msf))
     } else {
-        BoxedUint::zero()
+        BoxedUint::one()
     };
 
     let mut signature_shares = Vec::with_capacity(key_shares.len());
     let mut lagrange_indices = Vec::with_capacity(key_shares.len());
 
+    let proof_ctx = provable.then(|| build_proof_context(&m, &double_delta));
+
     for key_share in key_shares {
         let signature = if provable {
+            // It would be cleaner to square the signature here.
+            // TODO: benchmark whether there is a noticeable performance drop when squaring in each loop.
             m.pow(&key_share.d.clone().mul(&double_delta))
         } else {
             m.pow(&key_share.d)
         };
 
-        let index = key_share.index;
-        signature_shares.push(SignatureShare { index, signature });
-        lagrange_indices.push(index as i64);
-    }
-
-    let proof_ctx = provable.then(|| build_proof_context(&m, &double_delta));
-
-    let mut w = Integer::from(1);
-    for share in signature_shares {
         if let Some(ctx) = &proof_ctx {
-            let vs = ctx
+            let pub_share = ctx
                 .verification_shares
-                .get(&share.index)
+                .get(&key_share.index)
                 .expect("missing verification share");
 
-            let secret_share = key_shares
-                .iter()
-                .find(|tmp| tmp.index == share.index)
-                .expect("matching secret share not found");
-
-            let proof = build_proof(&ctx, &share.signature, &secret_share.d, &vs.vk.retrieve());
+            let proof = build_proof(&ctx, &signature, &key_share.d, &pub_share.vk.retrieve());
 
             #[cfg(debug_assertions)]
             {
                 let verify_provable = true;
                 if verify_provable {
                     let tmp1 = ctx.verification_key.pow(&proof.response);
-                    let tmp2 = vs.vk.pow(&proof.challenge).invert().unwrap();
+                    let tmp2 = pub_share.vk.pow(&proof.challenge).invert().unwrap();
                     assert_eq!(proof.key_commitment, tmp1.mul(&tmp2));
 
                     let tmp1 = ctx.message_witness.pow(&proof.response);
-                    let tmp2 = share
-                        .signature
-                        .square()
-                        .pow(&proof.challenge)
-                        .invert()
-                        .unwrap();
+                    let tmp2 = signature.square().pow(&proof.challenge).invert().unwrap();
                     assert_eq!(proof.msg_commitment, tmp1.mul(&tmp2));
                 }
             }
         }
 
-        let sc = shoup_0_coefficient(share.index as i64, lagrange_indices.clone(), &delta);
-        let sc = if provable { sc * 2 } else { sc };
-
         // There are no more secrets here, so we switch to a more performant bignum library.
         // TODO: consider whether to use Rug for everything, and use `secure_pow_mod` for RSA.
         // Not sure how different the security guarantees are...
-        let signature = Integer::from_digits(share.signature.retrieve().as_words(), Order::Lsf);
-        let term = signature.pow_mod(&Integer::from(sc), &n).unwrap();
+        let signature = Integer::from_digits(signature.retrieve().as_words(), Order::Lsf);
+
+        let index = key_share.index;
+        signature_shares.push(SignatureShare { index, signature });
+        lagrange_indices.push(index as i64);
+    }
+
+    let mut w = Integer::from(1);
+    for share in signature_shares {
+        let sc = shoup_0_coefficient(share.index as i64, lagrange_indices.clone(), &delta);
+        let sc = if provable { sc * 2 } else { sc };
+
+        let term = share.signature.pow_mod(&Integer::from(sc), &n).unwrap();
         w.mul_assign(&term);
         w.modulo_mut(&n);
     }
 
-    let shoup_exp = if provable { delta.pow(2).mul(4) } else { delta };
+    let shoup_exp = if provable {
+        delta.square().mul(4)
+    } else {
+        delta
+    };
 
     let pub_exp = Integer::from_digits(&pk.e().to_bytes_le(), Order::Lsf);
     let (_, a, b) = shoup_exp.extended_gcd(pub_exp, Integer::new());
