@@ -3,7 +3,6 @@ use crypto_bigint::{
     BoxedUint,
 };
 use rasn::prelude::IntegerType;
-use rsa::BigUint;
 use rug::integer::Order;
 
 pub fn i2osp(i: rug::Integer, len: usize) -> Vec<u8> {
@@ -17,13 +16,13 @@ pub fn i2osp(i: rug::Integer, len: usize) -> Vec<u8> {
     out
 }
 
-pub fn monty_params_from_rsa_modulus(n: &BigUint) -> BoxedMontyParams {
-    let n_bytes = n.to_bytes_be();
-    let n = BoxedUint::from_be_slice(&n_bytes, n.bits() as u32)
-        .expect("Failed to build BoxedUint from modulus");
-    let n = n.to_odd().expect("RSA modulus is not odd");
-    BoxedMontyParams::new(n)
-}
+// pub fn monty_params_from_rsa_modulus(n: &BigUint) -> BoxedMontyParams {
+//     let n_bytes = n.to_bytes_be();
+//     let n = BoxedUint::from_be_slice(&n_bytes, n.bits() as u32)
+//         .expect("Failed to build BoxedUint from modulus");
+//     let n = n.to_odd().expect("RSA modulus is not odd");
+//     BoxedMontyParams::new(n)
+// }
 
 pub fn os2ip_montgomery(octets: &[u8], mp: BoxedMontyParams) -> BoxedMontyForm {
     let ui = BoxedUint::from_be_slice(octets, mp.modulus().bits())

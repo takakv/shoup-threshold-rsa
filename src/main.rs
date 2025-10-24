@@ -5,12 +5,12 @@ use std::{
     path::PathBuf,
 };
 
+use clap::Parser;
 use crypto_bigint::{
-    modular::{BoxedMontyForm, BoxedMontyParams}, BoxedUint, RandomBits,
+    modular::{BoxedMontyForm, BoxedMontyParams}, BitOps, BoxedUint, RandomBits,
     Word,
 };
 use rasn::types::IntegerType;
-use rsa::{pkcs8::DecodePublicKey, traits::PublicKeyParts, RsaPublicKey};
 use rug::{integer::Order, Integer};
 use sha2::{Digest, Sha256};
 
@@ -21,12 +21,19 @@ mod pss;
 
 use arithmetic::{shoup_0_coefficient, shoup_delta};
 use asn1::{ShamirSecretShare, ShoupKeyShare, ShoupVerificationKey, ShoupVerifyShare};
-use convert::{asn1uint_to_boxed_monty, i2osp, monty_params_from_rsa_modulus, os2ip_montgomery};
+use convert::{asn1uint_to_boxed_monty, i2osp, os2ip_montgomery};
 use pss::emsa_pss_encode;
 
 pub struct KeyShare {
     pub index: u16,
     pub d: BoxedUint,
+}
+
+pub struct PublicParameters {
+    pub n: Integer,
+    pub e: Integer,
+    pub byte_len: usize,
+    pub monty_params: BoxedMontyParams,
 }
 
 pub struct VerifyShare {
@@ -37,6 +44,11 @@ pub struct VerifyShare {
 pub struct SignatureShare {
     pub index: u16,
     pub signature: Integer,
+}
+
+struct ThresholdParameters {
+    threshold: u16,
+    total_shares: u16,
 }
 
 struct ProofContext {
@@ -117,25 +129,24 @@ fn build_proof(
 
 fn threshold_sign(
     key_shares: &[KeyShare],
-    threshold: u16,
-    total_shares: u16,
-    pk: RsaPublicKey,
+    pub_params: &PublicParameters,
     msg: &[u8],
+    params: &ThresholdParameters,
+    provable: bool,
 ) -> Vec<u8> {
-    assert!(threshold <= total_shares);
+    assert!(params.threshold <= params.total_shares);
 
-    if key_shares.len() < threshold as usize {
+    if key_shares.len() < params.threshold as usize {
         panic!("not enough secret shares");
     }
 
-    let em_bits = pk.n().bits() - 1;
-    let em = emsa_pss_encode::<Sha256>(&msg, em_bits);
-    let m = os2ip_montgomery(&em, monty_params_from_rsa_modulus(pk.n()));
+    let em_bits = pub_params.n.significant_bits() - 1;
+    let em = emsa_pss_encode::<Sha256>(&msg, em_bits as usize);
+    let m = os2ip_montgomery(&em, pub_params.monty_params.clone());
 
     let n = Integer::from_digits(m.params().modulus().as_words(), Order::Lsf);
 
-    let delta = shoup_delta(total_shares as u32);
-    let provable = true;
+    let delta = shoup_delta(params.total_shares as u32);
 
     // This is used for the constant-time exponentiation, so it must be a BoxedUInt.
     let double_delta = if provable {
@@ -150,7 +161,12 @@ fn threshold_sign(
 
     let proof_ctx = provable.then(|| build_proof_context(&m, &double_delta));
 
+    let mut count = 0;
     for key_share in key_shares {
+        if count >= params.threshold {
+            break;
+        }
+
         let signature = if provable {
             // It would be cleaner to square the signature here.
             // TODO: benchmark whether there is a noticeable performance drop when squaring in each loop.
@@ -192,6 +208,8 @@ fn threshold_sign(
         // Use i32 to simplify subtractions when computing the coefficients of the Lagrange polynomial.
         // u16 always fits within i32.
         lagrange_indices.push(index as i32);
+
+        count += 1;
     }
 
     let mut w = Integer::from(1);
@@ -210,22 +228,23 @@ fn threshold_sign(
         delta
     };
 
-    let pub_exp = Integer::from_digits(&pk.e().to_bytes_le(), Order::Lsf);
-    let (_, a, b) = shoup_exp.extended_gcd(pub_exp, Integer::new());
+    let (_, a, b) = shoup_exp.extended_gcd(pub_params.e.clone(), Integer::new());
 
     let m = Integer::from_digits(m.retrieve().as_words(), Order::Lsf);
     let wa = w.pow_mod(&a, &n).unwrap();
     let xb = m.pow_mod(&b, &n).unwrap();
 
     let signature = wa.mul(&xb).modulo(&n);
-    i2osp(signature, pk.size())
+    i2osp(signature, pub_params.byte_len)
 }
 
-fn load_key_shares<I>(entries: I) -> Vec<KeyShare>
+fn load_key_shares<I>(entries: I) -> (Vec<KeyShare>, PublicParameters)
 where
     I: IntoIterator<Item = std::io::Result<fs::DirEntry>>,
 {
     let mut key_shares = Vec::new();
+    let mut params: Option<PublicParameters> = None;
+
     for entry in entries {
         let entry = entry.expect("Invalid directory entry");
         let path = entry.path();
@@ -251,9 +270,29 @@ where
         let d_boxed = BoxedUint::from_be_slice(d_bytes.as_ref(), (d_len * 8) as u32)
             .expect("Failed to build BoxedUint");
         key_shares.push(KeyShare { index, d: d_boxed });
+
+        if params.is_none() {
+            let (n_bytes, _) = rsa_share.n.to_unsigned_bytes_be();
+            let n = Integer::from_digits(n_bytes.as_ref(), Order::Msf);
+
+            let (e_bytes, _) = rsa_share.e.to_unsigned_bytes_be();
+            let e = Integer::from_digits(e_bytes.as_ref(), Order::Lsf);
+
+            let n_words = n.to_digits::<Word>(Order::Lsf);
+            let n_boxed = BoxedUint::from_words(n_words);
+            let n_odd = n_boxed.to_odd().expect("RSA modulus is not odd");
+
+            params = Some(PublicParameters {
+                n,
+                e,
+                byte_len: n_odd.bytes_precision(),
+                monty_params: BoxedMontyParams::new(n_odd),
+            });
+        }
     }
 
-    key_shares
+    let params = params.expect("Could not parse RSA public parameters");
+    (key_shares, params)
 }
 
 fn load_verify_shares<I>(entries: I, mp: &BoxedMontyParams) -> HashMap<u16, VerifyShare>
@@ -291,23 +330,43 @@ where
     verify_shares
 }
 
+#[derive(Parser, Debug)]
+struct Args {
+    /// File to read the data from
+    #[arg(long = "in", short)]
+    infile: PathBuf,
+
+    /// Filename to output the signature to
+    #[arg(long = "out", short)]
+    outfile: PathBuf,
+
+    /// Directory containing the private key shares
+    shares: PathBuf,
+
+    /// Minimum number of shares required for signing
+    #[arg(short, long)]
+    threshold: u16,
+
+    /// Number of total shareholders
+    #[arg(short = 'T', long)]
+    total: u16,
+}
+
 fn main() {
-    let pub_path = PathBuf::from("pub.pem");
-    let msg_path = PathBuf::from("message.txt");
-    let shares_dir = PathBuf::from("shares");
-    let out_path = PathBuf::from("signature.bin");
+    let args = Args::parse();
 
-    let pub_pem_bytes = fs::read(&pub_path).expect("Failed to read public key");
-    let pubkey = RsaPublicKey::from_public_key_pem(
-        std::str::from_utf8(&pub_pem_bytes).expect("Failed to parse public key PEM"),
-    )
-    .expect("Failed to load RSA public key");
+    let parameters = ThresholdParameters {
+        threshold: args.threshold,
+        total_shares: args.total,
+    };
 
-    let msg = fs::read(&msg_path).expect("Failed to read message file");
+    let provable = false;
 
-    let entries = fs::read_dir(&shares_dir).expect("Failed to list shares directory");
-    let key_shares = load_key_shares(entries);
+    let msg = fs::read(&args.infile).expect("Failed to read message file");
 
-    let signature = threshold_sign(&key_shares, 3, 5, pubkey, &msg);
-    fs::write(&out_path, &signature).expect("Failed to write signature to file");
+    let entries = fs::read_dir(&args.shares).expect("Failed to list shares directory");
+    let (key_shares, pub_params) = load_key_shares(entries);
+
+    let signature = threshold_sign(&key_shares, &pub_params, &msg, &parameters, provable);
+    fs::write(&args.outfile, &signature).expect("Failed to write signature to file");
 }
