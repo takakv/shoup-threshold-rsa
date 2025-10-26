@@ -4,7 +4,7 @@ use std::{
     path::PathBuf,
 };
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use crypto_bigint::{
     modular::{BoxedMontyForm, BoxedMontyParams}, BitOps, BoxedUint,
     Word,
@@ -15,13 +15,15 @@ use rug::{integer::Order, Integer};
 mod arithmetic;
 mod asn1;
 mod convert;
+mod generate;
 mod pss;
 mod signature;
 mod zkp;
 
-use crate::signature::threshold_sign;
 use asn1::{ShamirSecretShare, ShoupKeyShare, ShoupVerifyShare};
 use convert::asn1uint_to_boxed_monty;
+use generate::generate;
+use signature::threshold_sign;
 
 pub struct KeyShare {
     pub index: u16,
@@ -143,54 +145,113 @@ where
 }
 
 #[derive(Parser, Debug)]
-struct Args {
-    /// File to read the data from
-    #[arg(long = "in", short)]
-    infile: PathBuf,
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
 
-    /// Filename to output the signature to
-    #[arg(long = "out", short)]
-    outfile: PathBuf,
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Sign a message using private key shares
+    Sign {
+        /// File to read the data from
+        #[arg(long = "in", short)]
+        infile: PathBuf,
 
-    /// Directory containing the private key shares
-    shares: PathBuf,
+        /// Filename to output the signature to
+        #[arg(long = "out", short)]
+        outfile: PathBuf,
 
-    /// Minimum number of shares required for signing
-    #[arg(short, long)]
-    threshold: Option<u16>,
+        /// Directory containing the private key shares
+        shares: PathBuf,
 
-    /// Number of total shareholders
-    #[arg(short = 'T', long)]
-    total: Option<u16>,
+        /// Minimum number of shares required for signing
+        #[arg(short, long)]
+        threshold: Option<u16>,
+
+        /// Number of total shareholders
+        #[arg(short = 'T', long)]
+        total: Option<u16>,
+    },
+
+    /// Generate key shares and the public key
+    Gen {
+        /// Minimum number of shares required for signing
+        #[arg(short, long)]
+        threshold: u16,
+
+        /// Number of total shareholders
+        #[arg(short = 'T', long)]
+        total: u16,
+
+        /// Directory to output the generated shares to
+        shares_dir: PathBuf,
+
+        /// Filename to output the public key to
+        #[arg(long = "pub", short)]
+        pubkey_out: PathBuf,
+    },
 }
 
 fn main() {
-    let args = Args::parse();
+    let cli = Cli::parse();
 
     let provable = false;
 
-    let msg = fs::read(&args.infile).expect("Failed to read message file");
+    match &cli.command {
+        Commands::Sign {
+            infile,
+            outfile,
+            shares,
+            threshold,
+            total,
+        } => {
+            let msg = fs::read(&infile).expect("Failed to read message file");
 
-    let entries = fs::read_dir(&args.shares).expect("Failed to list shares directory");
-    let (key_shares, pub_params) = load_key_shares(entries);
+            let entries = fs::read_dir(&shares).expect("Failed to list shares directory");
+            let (key_shares, pub_params) = load_key_shares(entries);
 
-    let num_shares = key_shares.len() as u16;
-    let threshold = args.threshold.unwrap_or(num_shares);
-    let total_shares = args.total.unwrap_or(num_shares);
+            let num_shares = key_shares.len() as u16;
+            let threshold = threshold.unwrap_or(num_shares);
+            let total_shares = total.unwrap_or(num_shares);
 
-    if key_shares.len() < threshold as usize {
-        panic!("not enough secret shares");
+            if key_shares.len() < threshold as usize {
+                panic!("not enough secret shares");
+            }
+
+            if threshold > total_shares {
+                panic!("the threshold is greater than the total share count");
+            }
+
+            let parameters = ThresholdParameters {
+                threshold,
+                total_shares,
+            };
+
+            let signature = threshold_sign(&key_shares, &pub_params, &msg, &parameters, provable);
+            fs::write(&outfile, &signature).expect("Failed to write signature to file");
+        }
+        Commands::Gen {
+            threshold,
+            total,
+            shares_dir,
+            pubkey_out,
+        } => {
+            println!(
+                "Generating keys with threshold={}, total={}, shares_dir={:?}, pubkey_out={:?}",
+                threshold, total, shares_dir, pubkey_out
+            );
+
+            if threshold > total {
+                panic!("the threshold is greater than the total share count");
+            }
+
+            let parameters = ThresholdParameters {
+                threshold: *threshold,
+                total_shares: *total,
+            };
+
+            generate(2048, &parameters, pubkey_out, shares_dir);
+        }
     }
-
-    if threshold > total_shares {
-        panic!("the threshold is greater than the total share count");
-    }
-
-    let parameters = ThresholdParameters {
-        threshold,
-        total_shares,
-    };
-
-    let signature = threshold_sign(&key_shares, &pub_params, &msg, &parameters, provable);
-    fs::write(&args.outfile, &signature).expect("Failed to write signature to file");
 }
