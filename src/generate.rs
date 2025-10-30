@@ -58,26 +58,28 @@ pub fn generate(
     let e = BoxedUint::from(PUB_EXP).widen(m.bits_precision());
     let d = e.inv_odd_mod(&m).unwrap();
 
-    let e = BigUint::from(PUB_EXP);
-    let n = BigUint::from_slice_native(n.as_words());
-    let pubkey = RsaPublicKey::new(n.clone(), e).unwrap();
+    RsaPublicKey::new(
+        BigUint::from_slice_native(n.as_words()),
+        BigUint::from(PUB_EXP),
+    )
+    .unwrap()
+    .write_public_key_pem_file(pub_path, LineEnding::LF)
+    .expect("Failed to write public key");
 
-    pubkey
-        .write_public_key_pem_file(pub_path, LineEnding::LF)
-        .expect("Failed to write public key");
-
-    let e = rasn::types::Integer::from(PUB_EXP);
-    let n = rasn::types::Integer::try_from_unsigned_bytes(&n.to_bytes_be(), Codec::Der).unwrap();
+    let rasn_e = rasn::types::Integer::from(PUB_EXP);
+    let rasn_n =
+        rasn::types::Integer::try_from_unsigned_bytes(&n.to_be_bytes(), Codec::Der).unwrap();
 
     let mp = BoxedMontyParams::new(m.clone());
 
-    let mut coefficients = Vec::with_capacity(params.threshold as usize);
-    let mut indices = Vec::with_capacity(coefficients.len());
+    let threshold = params.threshold as usize;
+    let mut coefficients = Vec::with_capacity(threshold);
+    let mut indices = Vec::with_capacity(threshold);
 
     coefficients.push(BoxedMontyForm::new(d, mp.clone()));
     indices.push(BoxedUint::zero().widen(m.bits_precision()));
 
-    for i in 1..coefficients.len() as u32 {
+    for i in 1..threshold as u32 {
         let tmp = BoxedUint::random_mod(&mut OsRng, m.as_nz_ref());
         coefficients.push(BoxedMontyForm::new(tmp, mp.clone()));
         indices.push(BoxedUint::from(i).widen(m.bits_precision()));
@@ -87,32 +89,33 @@ pub fn generate(
     fs::create_dir_all(&shares_dir).expect("Failed to create shares dir");
 
     let zero = BoxedMontyForm::zero(mp.clone());
-    for i in 1..1 + params.total_shares {
-        let mi = BoxedUint::from(i).widen(m.bits_precision());
+    for i in 0..params.total_shares {
+        // The actual 'x' coordinate ranges from [1, total] since P(0) = d, which must not leak.
+        let mi = BoxedUint::from(i as u32 + 1).widen(m.bits_precision());
         let mi = BoxedMontyForm::new(mi, mp.clone());
 
         let mut sum = zero.clone();
-        for j in 0..coefficients.len() {
-            sum.add_assign(&mi.pow(&indices[j]).mul(&coefficients[j]));
+        for (idx, coeff) in indices.iter().zip(coefficients.iter()) {
+            sum.add_assign(&mi.pow(idx).mul(coeff));
         }
 
         let d = sum.retrieve().to_be_bytes();
         let d = rasn::types::Integer::try_from_unsigned_bytes(&d, Codec::Der).unwrap();
 
         let shoup = ShoupKeyShare {
-            n: n.clone(),
-            e: e.clone(),
+            n: rasn_n.clone(),
+            e: rasn_e.clone(),
             d,
         };
 
         let shamir = ShamirSecretShare {
-            share_index: (i - 1).to_be_bytes().into(),
+            share_index: i.to_be_bytes().into(),
             secret_share: rasn::der::encode(&shoup).unwrap().into(),
         };
 
         let tmp = rasn::der::encode(&shamir).unwrap();
 
-        let filename = shares_dir.join(format!("share-{}.bin", i - 1));
+        let filename = shares_dir.join(format!("share-{}.bin", i));
         let mut file = File::create(&filename).unwrap();
         file.write_all(&tmp).expect("Failed to write share");
     }
