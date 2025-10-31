@@ -9,7 +9,7 @@ use crypto_bigint::{
     modular::{BoxedMontyForm, BoxedMontyParams}, BitOps, BoxedUint,
     Word,
 };
-use rasn::types::IntegerType;
+use der::Decode;
 use rug::{integer::Order, Integer};
 
 mod arithmetic;
@@ -21,7 +21,6 @@ mod signature;
 mod zkp;
 
 use asn1::{ShamirSecretShare, ShoupKeyShare, ShoupVerifyShare};
-use convert::asn1uint_to_boxed_monty;
 use generate::generate;
 use signature::threshold_sign;
 
@@ -58,6 +57,7 @@ where
 {
     let mut key_shares = Vec::new();
     let mut params: Option<PublicParameters> = None;
+    let mut bits_precision = 0;
 
     for entry in entries {
         let entry = entry.expect("Invalid directory entry");
@@ -68,33 +68,27 @@ where
         };
 
         let data = fs::read(&path).expect("Failed to read share file");
-        let shamir_share: ShamirSecretShare =
-            rasn::der::decode(&data).expect("Failed to decode Shamir secret share");
+        let shamir_share =
+            ShamirSecretShare::from_der(&data).expect("Failed to decode Shamir secret share");
 
-        let bytes = &shamir_share.share_index;
+        let bytes = shamir_share.share_index.as_bytes();
         let mut buf = [0u8; 2];
         let start = 2 - bytes.len();
         buf[start..].copy_from_slice(bytes);
         let index = u16::from_be_bytes(buf) + 1;
 
-        let rsa_share: ShoupKeyShare =
-            rasn::der::decode(&shamir_share.secret_share).expect("Failed to decode RSA share");
-
-        let (d_bytes, d_len) = rsa_share.d.to_unsigned_bytes_be();
-        let d_boxed = BoxedUint::from_be_slice(d_bytes.as_ref(), (d_len * 8) as u32)
-            .expect("Failed to build BoxedUint");
-        key_shares.push(KeyShare { index, d: d_boxed });
+        let rsa_share = ShoupKeyShare::from_der(shamir_share.secret_share.as_bytes())
+            .expect("Failed to decode RSA share");
 
         if params.is_none() {
-            let (n_bytes, _) = rsa_share.n.to_unsigned_bytes_be();
-            let n = Integer::from_digits(n_bytes.as_ref(), Order::Msf);
-
-            let (e_bytes, _) = rsa_share.e.to_unsigned_bytes_be();
-            let e = Integer::from_digits(e_bytes.as_ref(), Order::Lsf);
+            let n = Integer::from_digits(rsa_share.n.as_bytes(), Order::Msf);
+            let e = Integer::from_digits(rsa_share.e.as_bytes(), Order::Lsf);
 
             let n_words = n.to_digits::<Word>(Order::Lsf);
             let n_boxed = BoxedUint::from_words(n_words);
             let n_odd = n_boxed.to_odd().expect("RSA modulus is not odd");
+
+            bits_precision = 8 * n_odd.bytes_precision() as u32;
 
             params = Some(PublicParameters {
                 n,
@@ -103,6 +97,10 @@ where
                 monty_params: BoxedMontyParams::new(n_odd),
             });
         }
+
+        let d_boxed = BoxedUint::from_be_slice(rsa_share.d.as_bytes(), bits_precision)
+            .expect("Failed to build BoxedUint");
+        key_shares.push(KeyShare { index, d: d_boxed });
     }
 
     let params = params.expect("Could not parse RSA public parameters");
@@ -123,22 +121,22 @@ where
         };
 
         let data = fs::read(&path).expect("Failed to read share file");
-        let verify_share: ShoupVerifyShare =
-            rasn::der::decode(&data).expect("Failed to decode verification share");
+        let verify_share =
+            ShoupVerifyShare::from_der(&data).expect("Failed to decode verification share");
 
-        let bytes = &verify_share.share_index;
+        let bytes = verify_share.share_index.as_bytes();
         let mut buf = [0u8; 2];
         let start = 2 - bytes.len();
         buf[start..].copy_from_slice(bytes);
         let index = u16::from_be_bytes(buf) + 1;
 
-        verify_shares.insert(
-            index,
-            VerifyShare {
-                index,
-                vk: asn1uint_to_boxed_monty(verify_share.public_share, mp),
-            },
+        let vk = BoxedMontyForm::new(
+            BoxedUint::from_be_slice(verify_share.public_share.as_bytes(), mp.bits_precision())
+                .unwrap(),
+            mp.clone(),
         );
+
+        verify_shares.insert(index, VerifyShare { index, vk });
     }
 
     verify_shares

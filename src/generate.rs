@@ -7,10 +7,10 @@ use std::path::Path;
 use crypto_bigint::modular::{BoxedMontyForm, BoxedMontyParams};
 use crypto_bigint::rand_core::OsRng;
 use crypto_bigint::{BoxedUint, RandomMod};
+use der::asn1::{OctetStringRef, UintRef};
+use der::Encode;
 use openssl::bn::BigNum;
 use openssl::error::ErrorStack;
-use rasn::types::IntegerType;
-use rasn::Codec;
 use rsa::pkcs1::LineEnding;
 use rsa::pkcs8::EncodePublicKey;
 use rsa::{BigUint, RsaPublicKey};
@@ -66,10 +66,6 @@ pub fn generate(
     .write_public_key_pem_file(pub_path, LineEnding::LF)
     .expect("Failed to write public key");
 
-    let rasn_e = rasn::types::Integer::from(PUB_EXP);
-    let rasn_n =
-        rasn::types::Integer::try_from_unsigned_bytes(&n.to_be_bytes(), Codec::Der).unwrap();
-
     let mp = BoxedMontyParams::new(m.clone());
 
     let threshold = params.threshold as usize;
@@ -88,6 +84,12 @@ pub fn generate(
     let shares_dir = shares_dir.as_ref();
     fs::create_dir_all(&shares_dir).expect("Failed to create shares dir");
 
+    let n_bytes = n.to_be_bytes();
+    let e_bytes = e.to_be_bytes();
+
+    let n_ref = UintRef::new(&n_bytes).unwrap();
+    let e_ref = UintRef::new(&e_bytes).unwrap();
+
     let zero = BoxedMontyForm::zero(mp.clone());
     for i in 0..params.total_shares {
         // The actual 'x' coordinate ranges from [1, total] since P(0) = d, which must not leak.
@@ -99,24 +101,24 @@ pub fn generate(
             sum.add_assign(&mi.pow(idx).mul(coeff));
         }
 
-        let d = sum.retrieve().to_be_bytes();
-        let d = rasn::types::Integer::try_from_unsigned_bytes(&d, Codec::Der).unwrap();
-
+        let secret_bytes = sum.retrieve().to_be_bytes();
         let shoup = ShoupKeyShare {
-            n: rasn_n.clone(),
-            e: rasn_e.clone(),
-            d,
+            n: n_ref,
+            e: e_ref,
+            d: UintRef::new(&secret_bytes).unwrap(),
         };
+
+        let index_bytes = i.to_be_bytes();
+        let shoup_der_bytes = shoup.to_der().unwrap();
 
         let shamir = ShamirSecretShare {
-            share_index: i.to_be_bytes().into(),
-            secret_share: rasn::der::encode(&shoup).unwrap().into(),
+            share_index: OctetStringRef::new(&index_bytes).unwrap(),
+            secret_share: OctetStringRef::new(&shoup_der_bytes).unwrap(),
         };
-
-        let tmp = rasn::der::encode(&shamir).unwrap();
 
         let filename = shares_dir.join(format!("share-{}.bin", i));
         let mut file = File::create(&filename).unwrap();
-        file.write_all(&tmp).expect("Failed to write share");
+        file.write_all(&shamir.to_der().unwrap())
+            .expect("Failed to write share");
     }
 }

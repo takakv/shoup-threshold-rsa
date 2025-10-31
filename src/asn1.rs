@@ -1,27 +1,26 @@
-use rasn::prelude::OctetString;
-use rasn::Decoder;
-use rasn::{AsnType, Decode, Encode};
+use der::asn1::{OctetStringRef, UintRef};
+use der::Sequence;
 
-#[derive(Debug, Clone, AsnType, Encode, Decode)]
-pub struct ShamirSecretShare {
-    pub share_index: OctetString,
-    pub secret_share: OctetString,
+#[derive(Clone, Sequence)]
+pub struct ShamirSecretShare<'a> {
+    pub share_index: OctetStringRef<'a>,
+    pub secret_share: OctetStringRef<'a>,
 }
 
-#[derive(Debug, Clone, AsnType, Encode, Decode)]
-pub struct ShoupKeyShare {
-    pub n: rasn::types::Integer,
-    pub e: rasn::types::Integer,
-    pub d: rasn::types::Integer,
+#[derive(Clone, Sequence)]
+pub struct ShoupKeyShare<'a> {
+    pub n: UintRef<'a>,
+    pub e: UintRef<'a>,
+    pub d: UintRef<'a>,
 }
 
-#[derive(Debug, Clone, AsnType, Encode, Decode)]
-pub struct ShoupVerificationKey {
-    pub vk: rasn::types::Integer,
+#[derive(Clone, Sequence)]
+pub struct ShoupVerificationKey<'a> {
+    pub vk: UintRef<'a>,
 }
 
-#[derive(Debug, Clone, AsnType, Encode, Decode)]
-pub struct ShoupVerifyShare {
-    pub share_index: OctetString,
-    pub public_share: rasn::types::Integer,
+#[derive(Clone, Sequence)]
+pub struct ShoupVerifyShare<'a> {
+    pub share_index: OctetStringRef<'a>,
+    pub public_share: UintRef<'a>,
 }

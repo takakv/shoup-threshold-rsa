@@ -5,10 +5,10 @@ use std::path::PathBuf;
 
 use crypto_bigint::modular::BoxedMontyForm;
 use crypto_bigint::{BoxedUint, RandomBits};
+use der::Decode;
 use sha2::{Digest, Sha256};
 
 use crate::asn1::ShoupVerificationKey;
-use crate::convert::asn1uint_to_boxed_monty;
 use crate::{load_verify_shares, VerifyShare};
 
 pub struct ProofContext {
@@ -32,10 +32,12 @@ pub fn build_proof_context(m: &BoxedMontyForm, dd: &BoxedUint) -> ProofContext {
     let vk_path = PathBuf::from("vk.der");
     let vk_shares_dir = PathBuf::from("vks");
 
-    let vk = fs::read(&vk_path).expect("Failed to read verification key");
-    let vk: ShoupVerificationKey =
-        rasn::der::decode(&vk).expect("Failed to decode verification key");
-    let verification_key = asn1uint_to_boxed_monty(vk.vk, m.params());
+    let vk_der = fs::read(&vk_path).expect("Failed to read verification key");
+    let vk = ShoupVerificationKey::from_der(&vk_der).unwrap();
+    let verification_key = BoxedMontyForm::new(
+        BoxedUint::from_be_slice(vk.vk.as_bytes(), m.bits_precision()).unwrap(),
+        m.params().clone(),
+    );
 
     let vk_shares = fs::read_dir(&vk_shares_dir).expect("Failed to list shares directory");
 
