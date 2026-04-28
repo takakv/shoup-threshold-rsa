@@ -6,6 +6,7 @@ use der::Encode;
 use rand::rand_core::OsRng;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
+use sha2::{Digest, Sha256};
 
 mod arithmetic;
 mod asn1;
@@ -68,6 +69,10 @@ enum Commands {
         #[arg(long = "out", short)]
         outfile: PathBuf,
 
+        /// File whose bytes are used as the PRNG seed (defaults to SHA-256 of the input file)
+        #[arg(long = "rand")]
+        rand: Option<PathBuf>,
+
         /// Optional output file for the verification share
         #[arg(long = "verify-out")]
         vk_share: Option<PathBuf>,
@@ -93,6 +98,10 @@ enum Commands {
         /// Public key file
         #[arg(long = "pub", short)]
         pubkey: PathBuf,
+
+        /// File whose bytes are used as the PRNG seed (defaults to SHA-256 of the input file)
+        #[arg(long = "rand")]
+        rand: Option<PathBuf>,
 
         /// Minimum number of shares required for signing
         #[arg(short, long)]
@@ -127,6 +136,19 @@ enum Commands {
         #[arg(long = "pub", short)]
         pubkey_out: PathBuf,
     },
+}
+
+fn make_seed(rand: &Option<PathBuf>, msg: &[u8]) -> [u8; 32] {
+    match rand {
+        Some(path) => {
+            let bytes = fs::read(path).expect("Failed to read rand file");
+            assert!(bytes.len() >= 32, "rand file must be at least 32 bytes");
+            let mut seed = [0u8; 32];
+            seed.copy_from_slice(&bytes[..32]);
+            seed
+        }
+        None => Sha256::digest(msg).into(),
+    }
 }
 
 fn main() {
@@ -175,6 +197,7 @@ fn main() {
             infile,
             key_share,
             outfile,
+            rand,
             vk_share: _,
             threshold,
             total,
@@ -187,9 +210,7 @@ fn main() {
                 total_shares: total.unwrap(),
             };
 
-            let mut seed = [0u8; 32];
-            seed[..4].copy_from_slice(b"seed");
-            let mut rng = ChaCha8Rng::from_seed(seed);
+            let mut rng = ChaCha8Rng::from_seed(make_seed(rand, &msg));
             let share_bytes =
                 gen_signature_share(&key, &pub_params, &msg, &parameters, &mut rng).to_be_bytes();
             let index_bytes = (key.index - 1).to_be_bytes();
@@ -206,6 +227,7 @@ fn main() {
             infile,
             sig_shares,
             pubkey,
+            rand,
             threshold,
             total,
             outfile,
@@ -218,9 +240,7 @@ fn main() {
             };
             let shares = load_signature_shares(sig_shares);
 
-            let mut seed = [0u8; 32];
-            seed[..4].copy_from_slice(b"seed");
-            let mut rng = ChaCha8Rng::from_seed(seed);
+            let mut rng = ChaCha8Rng::from_seed(make_seed(rand, &msg));
             let signature = combine_shares(&shares, &msg, &pub_params, &parameters, &mut rng);
             fs::write(outfile, &signature).expect("Failed to write signature");
         }
