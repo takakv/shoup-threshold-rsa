@@ -15,7 +15,7 @@ use rsa::pkcs1::LineEnding;
 use rsa::pkcs8::EncodePublicKey;
 use rsa::{BigUint, RsaPublicKey};
 
-use crate::asn1::{ShamirSecretShare, ShoupKeyShare};
+use crate::asn1::{ShamirSecretShare, ShoupKeyShare, ShoupVerificationKey, ShoupVerifyShare};
 use crate::ThresholdParameters;
 
 const PUB_EXP: u32 = u16::MAX as u32 + 2;
@@ -31,6 +31,7 @@ pub fn generate(
     params: &ThresholdParameters,
     pub_path: impl AsRef<Path>,
     shares_dir: impl AsRef<Path>,
+    vk_dir: impl AsRef<Path>,
 ) {
     let p = gen_safe_prime(bits as i32).unwrap();
     let q = gen_safe_prime(bits as i32).unwrap();
@@ -52,11 +53,17 @@ pub fn generate(
     let pp = p.clone().sub(BoxedUint::one()).shr(1);
     let qq = q.clone().sub(BoxedUint::one()).shr(1);
 
-    let n = p.mul(&q);
+    let n = p.mul(&q).to_odd().unwrap();
     let m = pp.mul(&qq).to_odd().unwrap();
 
     let e = BoxedUint::from(PUB_EXP).widen(m.bits_precision());
     let d = e.inv_odd_mod(&m).unwrap();
+
+    let mp_n = BoxedMontyParams::new(n.clone());
+    let mp_m = BoxedMontyParams::new(m.clone());
+
+    let v = BoxedUint::random_mod(&mut OsRng, n.as_nz_ref());
+    let v = v.mul_mod(&v, n.as_nz_ref());
 
     RsaPublicKey::new(
         BigUint::from_slice_native(n.as_words()),
@@ -66,23 +73,35 @@ pub fn generate(
     .write_public_key_pem_file(pub_path, LineEnding::LF)
     .expect("Failed to write public key");
 
-    let mp = BoxedMontyParams::new(m.clone());
+    let svk_bytes = v.to_be_bytes();
+    let svk = ShoupVerificationKey {
+        vk: UintRef::new(svk_bytes.as_ref()).unwrap(),
+    };
+
+    let mut svk_file = File::create("vk.der").unwrap();
+    svk_file
+        .write_all(&svk.to_der().unwrap())
+        .expect("Failed to write share verification");
+
+    let monty_v = BoxedMontyForm::new(v, mp_n.clone());
 
     let threshold = params.threshold as usize;
     let mut coefficients = Vec::with_capacity(threshold);
     let mut indices = Vec::with_capacity(threshold);
 
-    coefficients.push(BoxedMontyForm::new(d, mp.clone()));
+    coefficients.push(BoxedMontyForm::new(d, mp_m.clone()));
     indices.push(BoxedUint::zero().widen(m.bits_precision()));
 
     for i in 1..threshold as u32 {
         let tmp = BoxedUint::random_mod(&mut OsRng, m.as_nz_ref());
-        coefficients.push(BoxedMontyForm::new(tmp, mp.clone()));
+        coefficients.push(BoxedMontyForm::new(tmp, mp_m.clone()));
         indices.push(BoxedUint::from(i).widen(m.bits_precision()));
     }
 
     let shares_dir = shares_dir.as_ref();
-    fs::create_dir_all(&shares_dir).expect("Failed to create shares dir");
+    let vk_dir = vk_dir.as_ref();
+    fs::create_dir_all(shares_dir).expect("Failed to create shares dir");
+    fs::create_dir_all(vk_dir).expect("Failed to create vk dir");
 
     let n_bytes = n.to_be_bytes();
     let e_bytes = e.to_be_bytes();
@@ -90,35 +109,57 @@ pub fn generate(
     let n_ref = UintRef::new(&n_bytes).unwrap();
     let e_ref = UintRef::new(&e_bytes).unwrap();
 
-    let zero = BoxedMontyForm::zero(mp.clone());
+    let zero = BoxedMontyForm::zero(mp_m.clone());
     for i in 0..params.total_shares {
         // The actual 'x' coordinate ranges from [1, total] since P(0) = d, which must not leak.
         let mi = BoxedUint::from(i as u32 + 1).widen(m.bits_precision());
-        let mi = BoxedMontyForm::new(mi, mp.clone());
+        let mi = BoxedMontyForm::new(mi, mp_m.clone());
 
         let mut sum = zero.clone();
         for (idx, coeff) in indices.iter().zip(coefficients.iter()) {
             sum.add_assign(&mi.pow(idx).mul(coeff));
         }
 
-        let secret_bytes = sum.retrieve().to_be_bytes();
+        let index_bytes = i.to_be_bytes();
+        let share_index = OctetStringRef::new(&index_bytes).unwrap();
+
+        let share_val = sum.retrieve();
+        let secret_bytes = share_val.to_be_bytes();
+        let secret = UintRef::new(secret_bytes.as_ref()).unwrap();
+
+        // Widen from m's precision to n's; no byte round-trip needed.
+        let exp = share_val.widen(n.bits_precision());
+        let public_share = monty_v.pow(&exp).retrieve().to_be_bytes();
+
+        let verify = ShoupVerifyShare {
+            share_index,
+            public_share: UintRef::new(public_share.as_ref()).unwrap(),
+        };
+
         let shoup = ShoupKeyShare {
             n: n_ref,
             e: e_ref,
-            d: UintRef::new(&secret_bytes).unwrap(),
+            d: secret,
         };
 
-        let index_bytes = i.to_be_bytes();
         let shoup_der_bytes = shoup.to_der().unwrap();
 
         let shamir = ShamirSecretShare {
-            share_index: OctetStringRef::new(&index_bytes).unwrap(),
+            share_index,
             secret_share: OctetStringRef::new(&shoup_der_bytes).unwrap(),
         };
 
-        let filename = shares_dir.join(format!("share-{}.bin", i));
-        let mut file = File::create(&filename).unwrap();
-        file.write_all(&shamir.to_der().unwrap())
+        let share_filename = shares_dir.join(format!("share-{}.bin", i));
+        let verify_filename = vk_dir.join(format!("vk-share-{}.bin", i));
+
+        let mut share_file = File::create(&share_filename).unwrap();
+        share_file
+            .write_all(&shamir.to_der().unwrap())
             .expect("Failed to write share");
+
+        let mut verify_file = File::create(&verify_filename).unwrap();
+        verify_file
+            .write_all(&verify.to_der().unwrap())
+            .expect("Failed to write share verification");
     }
 }

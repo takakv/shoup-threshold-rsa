@@ -182,8 +182,11 @@ enum Commands {
         #[arg(short = 'T', long)]
         total: u16,
 
-        /// Directory to output the generated shares to
+        /// Directory to output the generated key shares to
         shares_dir: PathBuf,
+
+        /// Directory to output the generated verification shares to
+        vk_dir: PathBuf,
 
         /// Filename to output the public key to
         #[arg(long = "pub", short)]
@@ -233,11 +236,12 @@ fn main() {
             threshold,
             total,
             shares_dir,
+            vk_dir,
             pubkey_out,
         } => {
             println!(
-                "Generating keys with threshold={}, total={}, shares_dir={:?}, pubkey_out={:?}",
-                threshold, total, shares_dir, pubkey_out
+                "Generating keys with threshold={}, total={}, shares_dir={:?}, vk_dir={:?}, pubkey_out={:?}",
+                threshold, total, shares_dir, vk_dir, pubkey_out
             );
 
             if threshold > total {
@@ -249,7 +253,7 @@ fn main() {
                 total_shares: *total,
             };
 
-            generate(2048, &parameters, pubkey_out, shares_dir);
+            generate(512, &parameters, pubkey_out, shares_dir, vk_dir);
         }
     }
 }
