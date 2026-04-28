@@ -11,6 +11,26 @@ use crate::pss::emsa_pss_encode;
 use crate::zkp::{build_proof, build_proof_context};
 use crate::{KeyShare, PublicParameters, SignatureShare, ThresholdParameters};
 
+pub fn gen_signature_share(
+    key_share: &KeyShare,
+    pub_params: &PublicParameters,
+    msg: &[u8],
+    params: &ThresholdParameters,
+) -> BoxedUint {
+    let em_bits = pub_params.n.significant_bits() - 1;
+    let em = emsa_pss_encode::<Sha256>(&msg, em_bits as usize);
+    let m = os2ip_montgomery(&em, pub_params.monty_params.clone());
+
+    let delta = shoup_delta(params.total_shares as u32);
+    let double_delta = {
+        let dd: Integer = delta.clone().mul(2);
+        BoxedUint::from_words(dd.to_digits::<Word>(Order::Msf))
+    };
+
+    let signature = m.pow(&key_share.d.clone().mul(&double_delta));
+    signature.retrieve()
+}
+
 pub fn threshold_sign(
     key_shares: &[KeyShare],
     pub_params: &PublicParameters,
