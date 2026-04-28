@@ -9,7 +9,8 @@ use der::Decode;
 use sha2::{Digest, Sha256};
 
 use crate::asn1::ShoupVerificationKey;
-use crate::{load_verify_shares, VerifyShare};
+use crate::loaders::load_verify_shares;
+use crate::VerifyShare;
 
 pub struct ProofContext {
     pub verification_key: BoxedMontyForm,
