@@ -24,3 +24,9 @@ pub struct ShoupVerifyShare<'a> {
     pub share_index: OctetStringRef<'a>,
     pub public_share: UintRef<'a>,
 }
+
+#[derive(Clone, Sequence)]
+pub struct SignatureShareDer<'a> {
+    pub share_index: OctetStringRef<'a>,
+    pub signature: UintRef<'a>,
+}

@@ -8,6 +8,7 @@ crypto-bigint = { version = "0.6.1", features = ["alloc"] }
 rsa = { version = "0.9.8" }
 sha2 = "0.10.9"
 rand = "0.9.2"
+rand_chacha = "0.9"
 rug = { version = "1.28.0", default-features = false, features = ["integer", "std"] }
 clap = { version = "4.5.50", features = ["derive"] }
 openssl = "0.10.74"

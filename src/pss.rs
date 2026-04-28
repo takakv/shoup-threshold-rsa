@@ -1,4 +1,4 @@
-use rand::{rand_core::OsRng, TryRngCore};
+use rand::TryRngCore;
 use rsa::signature::digest::{Digest, FixedOutputReset};
 
 fn mgf1_xor_mask<D>(out: &mut [u8], seed: &[u8])
@@ -30,9 +30,10 @@ where
     }
 }
 
-pub fn emsa_pss_encode<D>(message: &[u8], em_bits: usize) -> Vec<u8>
+pub fn emsa_pss_encode<D, R>(message: &[u8], em_bits: usize, rng: &mut R) -> Vec<u8>
 where
     D: Digest + FixedOutputReset,
+    R: TryRngCore,
 {
     let h_len = <D as Digest>::output_size();
     let s_len = h_len; // Use the same hash function for the message and MGF1.
@@ -54,8 +55,7 @@ where
     // 4. Generate a random octet string salt of length sLen; if sLen =
     //    0, then salt is the empty string.
     let mut salt = vec![0u8; s_len];
-    OsRng
-        .try_fill_bytes(&mut salt)
+    rng.try_fill_bytes(&mut salt)
         .expect("Could not generate PSS salt");
 
     // 5. Let
