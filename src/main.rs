@@ -118,6 +118,10 @@ enum Commands {
 
     /// Generate key shares and the public key
     Gen {
+        /// RSA key size in bits (2048, 3072, or 4096)
+        #[arg(long, short = 'b', default_value_t = 3072)]
+        bits: u32,
+
         /// Minimum number of shares required for signing
         #[arg(short, long)]
         threshold: u16,
@@ -246,12 +250,21 @@ fn main() {
         }
 
         Commands::Gen {
+            bits,
             threshold,
             total,
             shares_dir,
             vk_dir,
             pubkey_out,
         } => {
+            #[cfg(not(debug_assertions))]
+            if ![2048u32, 3072, 4096].contains(bits) {
+                eprintln!(
+                    "error: key size must be 2048, 3072, or 4096 bits (got {})",
+                    bits
+                );
+                std::process::exit(1);
+            }
             if threshold > total {
                 panic!("the threshold is greater than the total share count");
             }
@@ -259,7 +272,7 @@ fn main() {
                 threshold: *threshold,
                 total_shares: *total,
             };
-            generate(512, &parameters, pubkey_out, shares_dir, vk_dir);
+            generate(*bits, &parameters, pubkey_out, shares_dir, vk_dir);
         }
     }
 }

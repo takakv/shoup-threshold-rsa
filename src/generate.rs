@@ -33,11 +33,15 @@ pub fn generate(
     shares_dir: impl AsRef<Path>,
     vk_dir: impl AsRef<Path>,
 ) {
-    let p = gen_safe_prime(bits as i32).unwrap();
-    let q = gen_safe_prime(bits as i32).unwrap();
+    eprintln!("Generating {}-bit RSA key...", bits);
+    let prime_bits = (bits / 2) as i32;
 
-    let p = BoxedUint::from_be_slice(&p.to_vec(), bits).unwrap();
-    let q = BoxedUint::from_be_slice(&q.to_vec(), bits).unwrap();
+    let q_thread = std::thread::spawn(move || gen_safe_prime(prime_bits).unwrap());
+    let p = gen_safe_prime(prime_bits).unwrap();
+    let q = q_thread.join().unwrap();
+
+    let p = BoxedUint::from_be_slice(&p.to_vec(), bits / 2).unwrap();
+    let q = BoxedUint::from_be_slice(&q.to_vec(), bits / 2).unwrap();
 
     // let p = BoxedUint::from_str_radix_vartime(
     //     "26721790369041029130868520763295151254217321491087464401697308359428124568208418796785374594386483708769500392956109451369301964202268719910199513514635514892411322231917573962006404206468500563453468144452383175758744984316887938512985683705353295737253011586022713748208365982283339040315723992733221272897387781928834985765343287777982894909818001847927312694363468520293022758689051398560934996468923297466425872806263557843750264768675232356878249924473059819052587468596107560268401592637155883539412546801642358620515787130219870781673848055336564847264702211278359971042396542911329690277899759771918085371267",
@@ -149,8 +153,8 @@ pub fn generate(
             secret_share: OctetStringRef::new(&shoup_der_bytes).unwrap(),
         };
 
-        let share_filename = shares_dir.join(format!("share-{}.bin", i));
-        let verify_filename = vk_dir.join(format!("vk-share-{}.bin", i));
+        let share_filename = shares_dir.join(format!("share-{}.der", i));
+        let verify_filename = vk_dir.join(format!("vk-share-{}.der", i));
 
         let mut share_file = File::create(&share_filename).unwrap();
         share_file
