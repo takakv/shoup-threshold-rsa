@@ -19,7 +19,7 @@ fn setup() -> (RsaPublicKey, BoxedMontyForm) {
     let params = BoxedMontyParams::new(n.to_odd().unwrap());
 
     let ui = BoxedUint::from_be_slice(&n_bytes, params.modulus().bits()).unwrap();
-    let m = BoxedMontyForm::new(ui, params);
+    let m = BoxedMontyForm::new(ui, &params);
 
     let i1 = Integer::from_digits(black_box(m.params().modulus().as_words()), Order::Lsf);
     let i2 = Integer::from_digits(black_box(&public_key.n().to_bytes_be()), Order::Msf);

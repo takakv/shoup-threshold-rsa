@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::ops::{Mul, MulAssign};
 
 use crypto_bigint::modular::BoxedMontyForm;
-use crypto_bigint::{BoxedUint, Word};
+use crypto_bigint::{BoxedUint, ConcatenatingMul, Word};
 use rand::TryRng;
 use rug::integer::Order;
 use rug::Integer;
@@ -31,7 +31,9 @@ pub fn gen_signature_share<R: TryRng>(
     let delta = shoup_delta(total_shares as u32);
     let delta_boxed = BoxedUint::from_words(delta.to_digits::<Word>(Order::Msf));
 
-    let signature = m.pow(&key_share.d.clone().mul(&delta_boxed)).square();
+    let signature = m
+        .pow(&key_share.d.clone().concatenating_mul(&delta_boxed))
+        .square();
 
     let proof = vk.map(|vk| prove(&m, pub_params, &vk, &signature, &key_share.d, &delta));
 
@@ -85,7 +87,7 @@ pub fn combine_shares<R: TryRng>(
                 };
                 let sig_words = share.signature.to_digits::<Word>(Order::Lsf);
                 let sig_uint = BoxedUint::from_words(sig_words);
-                let sig_monty = BoxedMontyForm::new(sig_uint, pub_params.monty_params.clone());
+                let sig_monty = BoxedMontyForm::new(sig_uint, &pub_params.monty_params);
                 let ok = verify_proof(&m_monty, vk, &v_i.vk, &sig_monty, proof, &delta);
                 if ok {
                     eprintln!("share {}: proof ok", share.index - 1);

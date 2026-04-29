@@ -5,8 +5,7 @@ use std::ops::{AddAssign, Sub};
 use std::path::Path;
 
 use crypto_bigint::modular::{BoxedMontyForm, BoxedMontyParams};
-use crypto_bigint::rand_core::OsRng;
-use crypto_bigint::{BoxedUint, RandomMod};
+use crypto_bigint::{BoxedUint, ConcatenatingMul, RandomMod, Resize};
 use der::asn1::{OctetStringRef, UintRef};
 use der::Encode;
 use openssl::bn::BigNum;
@@ -48,16 +47,16 @@ pub fn generate(
     let pp = p.clone().sub(BoxedUint::one()).shr(1);
     let qq = q.clone().sub(BoxedUint::one()).shr(1);
 
-    let n = p.mul(&q).to_odd().unwrap();
-    let m = pp.mul(&qq).to_odd().unwrap();
+    let n = p.concatenating_mul(&q).to_odd().unwrap();
+    let m = pp.concatenating_mul(&qq).to_odd().unwrap();
 
-    let e = BoxedUint::from(PUB_EXP).widen(m.bits_precision());
-    let d = e.inv_odd_mod(&m).unwrap();
+    let e = BoxedUint::from(PUB_EXP).resize(m.bits_precision());
+    let d = e.invert_odd_mod(&m).unwrap();
 
     let mp_n = BoxedMontyParams::new(n.clone());
     let mp_m = BoxedMontyParams::new(m.clone());
 
-    let v = BoxedUint::random_mod(&mut OsRng, n.as_nz_ref());
+    let v = BoxedUint::random_mod_vartime(&mut rand::rng(), n.as_nz_ref());
     let v = v.mul_mod(&v, n.as_nz_ref());
 
     RsaPublicKey::new(
@@ -80,19 +79,19 @@ pub fn generate(
         .write_all(&svk_der)
         .expect("Failed to write share verification");
 
-    let monty_v = BoxedMontyForm::new(v, mp_n.clone());
+    let monty_v = BoxedMontyForm::new(v, &mp_n);
 
     let threshold = params.threshold as usize;
     let mut coefficients = Vec::with_capacity(threshold);
     let mut indices = Vec::with_capacity(threshold);
 
-    coefficients.push(BoxedMontyForm::new(d, mp_m.clone()));
-    indices.push(BoxedUint::zero().widen(m.bits_precision()));
+    coefficients.push(BoxedMontyForm::new(d, &mp_m));
+    indices.push(BoxedUint::zero().resize(m.bits_precision()));
 
     for i in 1..threshold as u32 {
-        let tmp = BoxedUint::random_mod(&mut OsRng, m.as_nz_ref());
-        coefficients.push(BoxedMontyForm::new(tmp, mp_m.clone()));
-        indices.push(BoxedUint::from(i).widen(m.bits_precision()));
+        let tmp = BoxedUint::random_mod_vartime(&mut rand::rng(), m.as_nz_ref());
+        coefficients.push(BoxedMontyForm::new(tmp, &mp_m));
+        indices.push(BoxedUint::from(i).resize(m.bits_precision()));
     }
 
     let shares_dir = shares_dir.as_ref();
@@ -106,11 +105,11 @@ pub fn generate(
     let n_ref = UintRef::new(&n_bytes).unwrap();
     let e_ref = UintRef::new(&e_bytes).unwrap();
 
-    let zero = BoxedMontyForm::zero(mp_m.clone());
+    let zero = BoxedMontyForm::zero(&mp_m);
     for i in 0..params.total_shares {
         // The actual 'x' coordinate ranges from [1, total] since P(0) = d, which must not leak.
-        let mi = BoxedUint::from(i as u32 + 1).widen(m.bits_precision());
-        let mi = BoxedMontyForm::new(mi, mp_m.clone());
+        let mi = BoxedUint::from(i as u32 + 1).resize(m.bits_precision());
+        let mi = BoxedMontyForm::new(mi, &mp_m);
 
         let mut sum = zero.clone();
         for (idx, coeff) in indices.iter().zip(coefficients.iter()) {
@@ -128,7 +127,7 @@ pub fn generate(
         let secret = UintRef::new(secret_bytes.as_ref()).unwrap();
 
         // Widen from m's precision to n's; no byte round-trip needed.
-        let exp = share_val.widen(n.bits_precision());
+        let exp = share_val.resize(n.bits_precision());
         let public_share = monty_v.pow(&exp).retrieve().to_be_bytes();
 
         let verify = ShoupVerifyShare {

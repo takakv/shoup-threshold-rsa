@@ -295,7 +295,7 @@ fn main() {
                     let mp = &pub_params.monty_params;
                     let v = BoxedUint::from_be_slice(svk.vk.as_bytes(), mp.bits_precision())
                         .expect("Failed to parse verification key bytes");
-                    let vk_monty = BoxedMontyForm::new(v, mp.clone());
+                    let vk_monty = BoxedMontyForm::new(v, &mp);
 
                     let entries =
                         fs::read_dir(vk_shares_path).expect("Failed to read vk-shares directory");

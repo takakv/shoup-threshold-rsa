@@ -85,7 +85,7 @@ pub fn load_key_share(
     let vk = shamir.vk.and_then(|vk_ref| {
         let svk = ShoupVerificationKey::from_der(vk_ref.as_bytes()).ok()?;
         let v = BoxedUint::from_be_slice(svk.vk.as_bytes(), bits_precision).ok()?;
-        Some(BoxedMontyForm::new(v, monty_params.clone()))
+        Some(BoxedMontyForm::new(v, &monty_params))
     });
 
     let params = PublicParameters {
@@ -221,7 +221,7 @@ where
         let vk = BoxedMontyForm::new(
             BoxedUint::from_be_slice(verify_share.public_share.as_bytes(), mp.bits_precision())
                 .unwrap(),
-            mp.clone(),
+            mp,
         );
 
         verify_shares.insert(index, VerifyShare { index, vk });

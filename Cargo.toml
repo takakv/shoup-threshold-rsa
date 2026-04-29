@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-crypto-bigint = { version = "0.6.1", features = ["alloc"] }
+crypto-bigint = { version = "0.7.3", features = ["alloc", "rand_core"] }
 rsa = { version = "0.9.8" }
 sha2 = "0.10.9"
 rand = { version = "0.10.1", features = ["sys_rng", "chacha"] }

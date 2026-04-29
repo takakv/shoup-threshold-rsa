@@ -26,7 +26,7 @@ pub fn i2osp(i: rug::Integer, len: usize) -> Vec<u8> {
 pub fn os2ip_montgomery(octets: &[u8], mp: BoxedMontyParams) -> BoxedMontyForm {
     let ui = BoxedUint::from_be_slice(octets, mp.modulus().bits())
         .expect("Failed to build BoxedUint from octets");
-    BoxedMontyForm::new(ui, mp)
+    BoxedMontyForm::new(ui, &mp)
 }
 
 // pub fn asn1uint_to_boxed_monty(i: rasn::types::Integer, mp: &BoxedMontyParams) -> BoxedMontyForm {

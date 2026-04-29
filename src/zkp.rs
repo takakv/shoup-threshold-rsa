@@ -1,8 +1,6 @@
-use std::ops::Add;
-
 use crypto_bigint::modular::BoxedMontyForm;
-use crypto_bigint::rand_core::OsRng;
-use crypto_bigint::{BoxedUint, RandomBits, Word};
+use crypto_bigint::{BoxedUint, ConcatenatingMul, RandomBits, Word};
+use rand::rngs::SysRng;
 use rug::integer::Order;
 use rug::Integer;
 use sha2::{Digest, Sha256};
@@ -40,7 +38,7 @@ pub fn prove(
     let x_bar = x.pow(&four_delta);
 
     let r_bits = pub_params.monty_params.bits_precision() + 2 * 256;
-    let r = BoxedUint::random_bits(&mut OsRng, r_bits);
+    let r = BoxedUint::random_bits(&mut SysRng, r_bits);
 
     let v_prime = vk.pow(&r);
     let x_prime = x_bar.pow(&r);
@@ -49,7 +47,7 @@ pub fn prove(
     let x_i_squared = signature.square().retrieve();
 
     let c = challenge(vk, &x_bar, &v_i, &x_i_squared, &v_prime, &x_prime);
-    let z = ss.mul(&c).add(r);
+    let z = ss.concatenating_mul(&c).concatenating_add(r);
 
     ShareProof {
         challenge: c,
