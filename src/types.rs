@@ -19,9 +19,15 @@ pub struct VerifyShare {
     pub vk: BoxedMontyForm,
 }
 
+pub struct ShareProof {
+    pub challenge: BoxedUint,
+    pub response: BoxedUint,
+}
+
 pub struct SignatureShare {
     pub index: u16,
     pub signature: Integer,
+    pub proof: Option<ShareProof>,
 }
 
 pub struct ThresholdParameters {

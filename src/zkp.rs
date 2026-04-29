@@ -1,91 +1,84 @@
-use std::collections::HashMap;
-use std::fs;
 use std::ops::Add;
-use std::path::PathBuf;
 
 use crypto_bigint::modular::BoxedMontyForm;
-use crypto_bigint::{BoxedUint, RandomBits};
-use der::Decode;
+use crypto_bigint::rand_core::OsRng;
+use crypto_bigint::{BoxedUint, RandomBits, Word};
+use rug::integer::Order;
+use rug::Integer;
 use sha2::{Digest, Sha256};
 
-use crate::asn1::ShoupVerificationKey;
-use crate::loaders::load_verify_shares;
-use crate::VerifyShare;
+use crate::{PublicParameters, ShareProof};
 
-pub struct ProofContext {
-    pub verification_key: BoxedMontyForm,
-    verification_key_bytes: Box<[u8]>,
-    pub message_witness: BoxedMontyForm,
-    message_witness_bytes: Box<[u8]>,
-    pub verification_shares: HashMap<u16, VerifyShare>,
-    challenge_len_bits: u32,
-    ephemeral_len_bits: u32,
-}
-
-pub struct Proof {
-    pub key_commitment: BoxedMontyForm,
-    pub msg_commitment: BoxedMontyForm,
-    pub challenge: BoxedUint,
-    pub response: BoxedUint,
-}
-
-pub fn build_proof_context(m: &BoxedMontyForm, dd: &BoxedUint) -> ProofContext {
-    let vk_path = PathBuf::from("vk.der");
-    let vk_shares_dir = PathBuf::from("vks");
-
-    let vk_der = fs::read(&vk_path).expect("Failed to read verification key");
-    let vk = ShoupVerificationKey::from_der(&vk_der).unwrap();
-    let verification_key = BoxedMontyForm::new(
-        BoxedUint::from_be_slice(vk.vk.as_bytes(), m.bits_precision()).unwrap(),
-        m.params().clone(),
-    );
-
-    let vk_shares = fs::read_dir(&vk_shares_dir).expect("Failed to list shares directory");
-
-    let message_witness = m.pow(&dd.mul(&BoxedUint::from(2u8)));
-
-    let challenge_len_bits = 8 * <Sha256>::output_size() as u32;
-
-    ProofContext {
-        verification_key_bytes: verification_key.retrieve().to_be_bytes(),
-        verification_key,
-        message_witness_bytes: message_witness.retrieve().to_be_bytes(),
-        message_witness,
-        verification_shares: load_verify_shares(vk_shares, m.params()),
-        challenge_len_bits,
-        ephemeral_len_bits: 2 * challenge_len_bits + m.bits_precision(),
-    }
-}
-
-pub fn build_proof(
-    ctx: &ProofContext,
-    signature: &BoxedMontyForm,
-    ss: &BoxedUint,
-    vk: &BoxedUint,
-) -> Proof {
-    // Commitments
-    let r = BoxedUint::random_bits(&mut crypto_bigint::rand_core::OsRng, ctx.ephemeral_len_bits);
-    let v_prime = ctx.verification_key.pow(&r);
-    let x_prime = ctx.message_witness.pow(&r);
-
-    // Challenge
-    let c = Sha256::new()
-        .chain_update(&ctx.verification_key_bytes)
-        .chain_update(&ctx.message_witness_bytes)
-        .chain_update(vk.to_be_bytes())
-        .chain_update(signature.square().retrieve().to_be_bytes())
+fn challenge(
+    vk: &BoxedMontyForm,
+    x_bar: &BoxedMontyForm,
+    v_i: &BoxedMontyForm,
+    x_i_squared: &BoxedUint,
+    v_prime: &BoxedMontyForm,
+    x_prime: &BoxedMontyForm,
+) -> BoxedUint {
+    let h = Sha256::new()
+        .chain_update(vk.retrieve().to_be_bytes())
+        .chain_update(x_bar.retrieve().to_be_bytes())
+        .chain_update(v_i.retrieve().to_be_bytes())
+        .chain_update(x_i_squared.to_be_bytes())
         .chain_update(v_prime.retrieve().to_be_bytes())
         .chain_update(x_prime.retrieve().to_be_bytes())
         .finalize();
-    let c = BoxedUint::from_be_slice(&c, ctx.challenge_len_bits).unwrap();
+    BoxedUint::from_be_slice(&h, 256).unwrap()
+}
 
-    // Response
-    let z = ss.mul(&c).add(&r);
+pub fn prove(
+    x: &BoxedMontyForm,
+    pub_params: &PublicParameters,
+    vk: &BoxedMontyForm,
+    signature: &BoxedMontyForm,
+    ss: &BoxedUint,
+    delta: &Integer,
+) -> ShareProof {
+    let four_delta = BoxedUint::from_words((delta.clone() * 4u32).to_digits::<Word>(Order::Msf));
+    let x_bar = x.pow(&four_delta);
 
-    Proof {
-        key_commitment: v_prime,
-        msg_commitment: x_prime,
+    let r_bits = pub_params.monty_params.bits_precision() + 2 * 256;
+    let r = BoxedUint::random_bits(&mut OsRng, r_bits);
+
+    let v_prime = vk.pow(&r);
+    let x_prime = x_bar.pow(&r);
+
+    let v_i = vk.pow(&ss);
+    let x_i_squared = signature.square().retrieve();
+
+    let c = challenge(vk, &x_bar, &v_i, &x_i_squared, &v_prime, &x_prime);
+    let z = ss.mul(&c).add(r);
+
+    ShareProof {
         challenge: c,
         response: z,
     }
+}
+
+pub fn verify_proof(
+    x: &BoxedMontyForm,
+    v: &BoxedMontyForm,
+    v_i: &BoxedMontyForm,
+    signature: &BoxedMontyForm,
+    proof: &ShareProof,
+    delta: &Integer,
+) -> bool {
+    let four_delta = BoxedUint::from_words((delta.clone() * 4u32).to_digits::<Word>(Order::Msf));
+    let x_bar = x.pow(&four_delta);
+
+    let x_i_squared = signature.square().retrieve();
+
+    let v_prime = v
+        .pow(&proof.response)
+        .mul(&v_i.pow(&proof.challenge).invert().unwrap());
+
+    let x_prime = x_bar
+        .pow(&proof.response)
+        .mul(&signature.square().pow(&proof.challenge).invert().unwrap());
+
+    let check = challenge(v, &x_bar, &v_i, &x_i_squared, &v_prime, &x_prime);
+
+    check.eq(&proof.challenge)
 }

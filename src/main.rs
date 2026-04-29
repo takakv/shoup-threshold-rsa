@@ -18,11 +18,18 @@ mod signature;
 mod types;
 mod zkp;
 
-pub use types::{KeyShare, PublicParameters, SignatureShare, ThresholdParameters, VerifyShare};
+pub use types::{
+    KeyShare, PublicParameters, ShareProof, SignatureShare, ThresholdParameters, VerifyShare,
+};
 
-use asn1::SignatureShareDer;
+use asn1::{CorrectnessProofDer, ShoupVerificationKey, SignatureShareDer};
+use crypto_bigint::modular::BoxedMontyForm;
+use crypto_bigint::BoxedUint;
+use der::Decode;
 use generate::generate;
-use loaders::{load_key_share, load_key_shares, load_pub_params, load_signature_shares};
+use loaders::{
+    load_key_share, load_key_shares, load_pub_params, load_signature_shares, load_verify_shares,
+};
 use signature::{combine_shares, gen_signature_share, threshold_sign};
 
 #[derive(Parser, Debug)]
@@ -73,17 +80,9 @@ enum Commands {
         #[arg(long = "rand")]
         rand: Option<PathBuf>,
 
-        /// Optional output file for the verification share
-        #[arg(long = "verify-out")]
-        vk_share: Option<PathBuf>,
-
-        /// Minimum number of shares required for signing
-        #[arg(short, long)]
-        threshold: Option<u16>,
-
-        /// Number of total shareholders
-        #[arg(short = 'T', long)]
-        total: Option<u16>,
+        /// Include a zero-knowledge proof of correct signing
+        #[arg(long)]
+        provable: bool,
     },
 
     /// Combine signature shares into a full signature
@@ -98,6 +97,14 @@ enum Commands {
         /// Public key file
         #[arg(long = "pub", short)]
         pubkey: PathBuf,
+
+        /// Verification key file
+        #[arg(long = "vk")]
+        vk: Option<PathBuf>,
+
+        /// Directory containing the per-share verification keys
+        #[arg(long = "vk-shares")]
+        vk_shares: Option<PathBuf>,
 
         /// File whose bytes are used as the PRNG seed (defaults to SHA-256 of the input file)
         #[arg(long = "rand")]
@@ -202,50 +209,113 @@ fn main() {
             key_share,
             outfile,
             rand,
-            vk_share: _,
-            threshold,
-            total,
+            provable,
         } => {
-            let msg = fs::read(infile).expect("Failed to read message file");
-            let (key, pub_params) = load_key_share(key_share);
+            let msg = fs::read(infile).unwrap_or_else(|e| {
+                eprintln!("error: failed to read {}: {}", infile.display(), e);
+                std::process::exit(1);
+            });
+            let (key, pub_params, vk, total_shares) = load_key_share(key_share);
 
-            let parameters = ThresholdParameters {
-                threshold: threshold.unwrap(),
-                total_shares: total.unwrap(),
-            };
+            if *provable && vk.is_none() {
+                eprintln!(
+                    "error: --provable requires a verification key embedded in the key share"
+                );
+                std::process::exit(1);
+            }
 
             let mut rng = ChaCha8Rng::from_seed(make_seed(rand, &msg));
-            let share_bytes =
-                gen_signature_share(&key, &pub_params, &msg, &parameters, &mut rng).to_be_bytes();
+            let (share, proof) = gen_signature_share(
+                &key,
+                &pub_params,
+                &msg,
+                total_shares,
+                vk.as_ref().filter(|_| *provable),
+                &mut rng,
+            );
+
+            let share_bytes = share.to_be_bytes();
             let index_bytes = (key.index - 1).to_be_bytes();
+
+            let proof_der = proof.map(|p| {
+                let c_bytes = p.challenge.to_be_bytes();
+                let z_bytes = p.response.to_be_bytes();
+                CorrectnessProofDer {
+                    c: UintRef::new(c_bytes.as_ref()).unwrap(),
+                    z: UintRef::new(z_bytes.as_ref()).unwrap(),
+                }
+                .to_der()
+                .unwrap()
+            });
 
             let sig_share = SignatureShareDer {
                 share_index: OctetStringRef::new(&index_bytes).unwrap(),
                 signature: UintRef::new(share_bytes.as_ref()).unwrap(),
+                proof: proof_der
+                    .as_deref()
+                    .map(|b| OctetStringRef::new(b).unwrap()),
             };
-            fs::write(outfile, sig_share.to_der().unwrap())
-                .expect("Failed to write signature share");
+            if let Err(e) = fs::write(outfile, sig_share.to_der().unwrap()) {
+                eprintln!("error: failed to write {}: {}", outfile.display(), e);
+                std::process::exit(1);
+            }
         }
 
         Commands::Combine {
             infile,
             sig_shares,
             pubkey,
+            vk,
+            vk_shares,
             rand,
             threshold,
             total,
             outfile,
         } => {
+            match (vk, vk_shares) {
+                (Some(_), None) | (None, Some(_)) => {
+                    eprintln!("error: --vk and --vk-shares must be provided together");
+                    std::process::exit(1);
+                }
+                _ => {}
+            }
+
             let msg = fs::read(infile).expect("Failed to read message file");
             let pub_params = load_pub_params(pubkey);
             let parameters = ThresholdParameters {
                 threshold: *threshold,
                 total_shares: *total,
             };
-            let shares = load_signature_shares(sig_shares);
+            let signature_shares = load_signature_shares(sig_shares);
+
+            let vk_data = match (vk, vk_shares) {
+                (Some(vk_path), Some(vk_shares_path)) => {
+                    let vk_der = fs::read(vk_path).expect("Failed to read verification key");
+                    let svk = ShoupVerificationKey::from_der(&vk_der)
+                        .expect("Failed to decode verification key");
+                    let mp = &pub_params.monty_params;
+                    let v = BoxedUint::from_be_slice(svk.vk.as_bytes(), mp.bits_precision())
+                        .expect("Failed to parse verification key bytes");
+                    let vk_monty = BoxedMontyForm::new(v, mp.clone());
+
+                    let entries =
+                        fs::read_dir(vk_shares_path).expect("Failed to read vk-shares directory");
+                    let verification_shares = load_verify_shares(entries, mp);
+
+                    Some((vk_monty, verification_shares))
+                }
+                _ => None,
+            };
 
             let mut rng = ChaCha8Rng::from_seed(make_seed(rand, &msg));
-            let signature = combine_shares(&shares, &msg, &pub_params, &parameters, &mut rng);
+            let signature = combine_shares(
+                &signature_shares,
+                &msg,
+                &pub_params,
+                &parameters,
+                vk_data.as_ref().map(|(v, s)| (v, s)),
+                &mut rng,
+            );
             fs::write(outfile, &signature).expect("Failed to write signature");
         }
 

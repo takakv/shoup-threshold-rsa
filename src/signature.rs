@@ -1,5 +1,7 @@
+use std::collections::HashMap;
 use std::ops::{Mul, MulAssign};
 
+use crypto_bigint::modular::BoxedMontyForm;
 use crypto_bigint::{BoxedUint, Word};
 use rand::TryRngCore;
 use rug::integer::Order;
@@ -9,24 +11,39 @@ use sha2::Sha256;
 use crate::arithmetic::{shoup_0_coefficient, shoup_delta};
 use crate::convert::{i2osp, os2ip_montgomery};
 use crate::pss::emsa_pss_encode;
-use crate::{KeyShare, PublicParameters, SignatureShare, ThresholdParameters};
+use crate::zkp::{prove, verify_proof};
+use crate::{
+    KeyShare, PublicParameters, ShareProof, SignatureShare, ThresholdParameters, VerifyShare,
+};
 
 pub fn gen_signature_share<R: TryRngCore>(
     key_share: &KeyShare,
     pub_params: &PublicParameters,
     msg: &[u8],
-    params: &ThresholdParameters,
+    total_shares: u16,
+    vk: Option<&BoxedMontyForm>,
     rng: &mut R,
-) -> BoxedUint {
+) -> (BoxedUint, Option<ShareProof>) {
     let em_bits = pub_params.n.significant_bits() - 1;
     let em = emsa_pss_encode::<Sha256, R>(msg, em_bits as usize, rng);
     let m = os2ip_montgomery(&em, pub_params.monty_params.clone());
 
-    let delta = shoup_delta(params.total_shares as u32);
+    let delta = shoup_delta(total_shares as u32);
     let delta_boxed = BoxedUint::from_words(delta.to_digits::<Word>(Order::Msf));
 
     let signature = m.pow(&key_share.d.clone().mul(&delta_boxed)).square();
-    signature.retrieve()
+
+    let proof = vk.map(|vk| prove(&m, pub_params, &vk, &signature, &key_share.d, &delta));
+
+    #[cfg(debug_assertions)]
+    if let (Some(vk), Some(proof)) = (vk, &proof) {
+        assert!(
+            verify_proof(&m, vk, &vk.pow(&key_share.d), &signature, proof, &delta),
+            "proof verification failed in debug check"
+        );
+    }
+
+    (signature.retrieve(), proof)
 }
 
 pub fn combine_shares<R: TryRngCore>(
@@ -34,19 +51,72 @@ pub fn combine_shares<R: TryRngCore>(
     msg: &[u8],
     pub_params: &PublicParameters,
     params: &ThresholdParameters,
+    vk_data: Option<(&BoxedMontyForm, &HashMap<u16, VerifyShare>)>,
     rng: &mut R,
 ) -> Vec<u8> {
     let n = &pub_params.n;
 
     let em_bits = n.significant_bits() - 1;
     let em = emsa_pss_encode::<Sha256, R>(msg, em_bits as usize, rng);
-    let m = Integer::from_digits(&em, Order::Msf);
 
     let delta = shoup_delta(params.total_shares as u32);
-    let lagrange_indices: Vec<i32> = shares.iter().map(|s| s.index as i32).collect();
+
+    let valid_shares: Vec<&SignatureShare> = if let Some((vk, share_vks)) = vk_data {
+        let m_monty = os2ip_montgomery(&em, pub_params.monty_params.clone());
+        shares
+            .iter()
+            .filter(|share| {
+                let v_i = match share_vks.get(&share.index) {
+                    Some(v) => v,
+                    None => {
+                        eprintln!(
+                            "error: no verification key share for index {}, skipping",
+                            share.index - 1
+                        );
+                        return false;
+                    }
+                };
+                let proof = match &share.proof {
+                    Some(p) => p,
+                    None => {
+                        eprintln!("share {}: skipping (missing proof)", share.index - 1);
+                        return false;
+                    }
+                };
+                let sig_words = share.signature.to_digits::<Word>(Order::Lsf);
+                let sig_uint = BoxedUint::from_words(sig_words);
+                let sig_monty = BoxedMontyForm::new(sig_uint, pub_params.monty_params.clone());
+                let ok = verify_proof(&m_monty, vk, &v_i.vk, &sig_monty, proof, &delta);
+                if ok {
+                    eprintln!("share {}: proof ok", share.index - 1);
+                } else {
+                    eprintln!(
+                        "error: proof verification failed for share {}",
+                        share.index - 1
+                    );
+                }
+                ok
+            })
+            .collect()
+    } else {
+        shares.iter().collect()
+    };
+
+    if valid_shares.len() < params.threshold as usize {
+        eprintln!(
+            "error: only {}/{} shares passed verification, below threshold of {}",
+            valid_shares.len(),
+            shares.len(),
+            params.threshold
+        );
+        std::process::exit(1);
+    }
+
+    let m = Integer::from_digits(&em, Order::Msf);
+    let lagrange_indices: Vec<i32> = valid_shares.iter().map(|s| s.index as i32).collect();
 
     let mut w = Integer::from(1u32);
-    for share in shares {
+    for share in &valid_shares {
         let sc = shoup_0_coefficient(share.index, &lagrange_indices, &delta) * 2;
         let term = share.signature.clone().pow_mod(&sc, n).unwrap();
         w *= &term;
@@ -83,8 +153,6 @@ pub fn threshold_sign<R: TryRngCore>(
     let mut signature_shares = Vec::with_capacity(key_shares.len());
     let mut lagrange_indices = Vec::with_capacity(key_shares.len());
 
-    // let proof_ctx = provable.then(|| build_proof_context(&m, &double_delta));
-
     let mut count = 0;
     for key_share in key_shares {
         if count >= params.threshold {
@@ -97,36 +165,17 @@ pub fn threshold_sign<R: TryRngCore>(
             m.pow(&key_share.d)
         };
 
-        // if let Some(ctx) = &proof_ctx {
-        //     let pub_share = ctx
-        //         .verification_shares
-        //         .get(&key_share.index)
-        //         .expect("missing verification share");
-        //
-        //     let proof = build_proof(&ctx, &signature, &key_share.d, &pub_share.vk.retrieve());
-        //
-        //     #[cfg(debug_assertions)]
-        //     {
-        //         let verify_provable = true;
-        //         if verify_provable {
-        //             let tmp1 = ctx.verification_key.pow(&proof.response);
-        //             let tmp2 = pub_share.vk.pow(&proof.challenge).invert().unwrap();
-        //             assert_eq!(proof.key_commitment, tmp1.mul(&tmp2));
-        //
-        //             let tmp1 = ctx.message_witness.pow(&proof.response);
-        //             let tmp2 = signature.square().pow(&proof.challenge).invert().unwrap();
-        //             assert_eq!(proof.msg_commitment, tmp1.mul(&tmp2));
-        //         }
-        //     }
-        // }
-
         // There are no more secrets here, so we switch to a more performant bignum library.
         // TODO: consider whether to use Rug for everything, and use `secure_pow_mod` for RSA.
         // Not sure how different the security guarantees are...
         let signature = Integer::from_digits(signature.retrieve().as_words(), Order::Lsf);
 
         let index = key_share.index;
-        signature_shares.push(SignatureShare { index, signature });
+        signature_shares.push(SignatureShare {
+            index,
+            signature,
+            proof: None,
+        });
         // Use i32 to simplify subtractions when computing the coefficients of the Lagrange polynomial.
         // u16 always fits within i32.
         lagrange_indices.push(index as i32);

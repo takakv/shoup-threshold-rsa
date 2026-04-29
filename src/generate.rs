@@ -43,15 +43,6 @@ pub fn generate(
     let p = BoxedUint::from_be_slice(&p.to_vec(), bits / 2).unwrap();
     let q = BoxedUint::from_be_slice(&q.to_vec(), bits / 2).unwrap();
 
-    // let p = BoxedUint::from_str_radix_vartime(
-    //     "26721790369041029130868520763295151254217321491087464401697308359428124568208418796785374594386483708769500392956109451369301964202268719910199513514635514892411322231917573962006404206468500563453468144452383175758744984316887938512985683705353295737253011586022713748208365982283339040315723992733221272897387781928834985765343287777982894909818001847927312694363468520293022758689051398560934996468923297466425872806263557843750264768675232356878249924473059819052587468596107560268401592637155883539412546801642358620515787130219870781673848055336564847264702211278359971042396542911329690277899759771918085371267",
-    //     10,
-    // ).unwrap();
-    // let q = BoxedUint::from_str_radix_vartime(
-    //     "26178275421079800129280651342446662497530433875413992515120574920971083157456612595031324883045802192806461544118942558923086234254607862462974313136223147383089944834039945685458133425275094317250040487697018190686643342565024928526945860212920517283531185867398947590278548226291800534173484093880985975617381513386490753993338492848940975946401986077692149429720127419145951937328371351280512390744306069796821289312800253193352176072490218176612840619292556589555403413179993760037717833976465824335447073713767255623627030840825232724512105308403906866675153321735219092839100237223879194477515528161890842289107",
-    //     10,
-    // ).unwrap();
-
     assert_ne!(&p, &q);
 
     let pp = p.clone().sub(BoxedUint::one()).shr(1);
@@ -78,13 +69,15 @@ pub fn generate(
     .expect("Failed to write public key");
 
     let svk_bytes = v.to_be_bytes();
-    let svk = ShoupVerificationKey {
+    let svk_der = ShoupVerificationKey {
         vk: UintRef::new(svk_bytes.as_ref()).unwrap(),
-    };
+    }
+    .to_der()
+    .unwrap();
 
     let mut svk_file = File::create("vk.der").unwrap();
     svk_file
-        .write_all(&svk.to_der().unwrap())
+        .write_all(&svk_der)
         .expect("Failed to write share verification");
 
     let monty_v = BoxedMontyForm::new(v, mp_n.clone());
@@ -127,6 +120,9 @@ pub fn generate(
         let index_bytes = i.to_be_bytes();
         let share_index = OctetStringRef::new(&index_bytes).unwrap();
 
+        let count_bytes = params.total_shares.to_be_bytes();
+        let share_count = OctetStringRef::new(&count_bytes).unwrap();
+
         let share_val = sum.retrieve();
         let secret_bytes = share_val.to_be_bytes();
         let secret = UintRef::new(secret_bytes.as_ref()).unwrap();
@@ -150,7 +146,9 @@ pub fn generate(
 
         let shamir = ShamirSecretShare {
             share_index,
+            share_count,
             secret_share: OctetStringRef::new(&shoup_der_bytes).unwrap(),
+            vk: Some(OctetStringRef::new(&svk_der).unwrap()),
         };
 
         let share_filename = shares_dir.join(format!("share-{}.der", i));
