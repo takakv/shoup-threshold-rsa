@@ -3,10 +3,10 @@ use der::Sequence;
 
 #[derive(Clone, Sequence)]
 pub struct ShamirSecretShare<'a> {
-    pub share_index: OctetStringRef<'a>,
-    pub share_count: OctetStringRef<'a>,
-    pub secret_share: OctetStringRef<'a>,
-    pub vk: Option<OctetStringRef<'a>>,
+    pub share_index: &'a OctetStringRef,
+    pub share_count: &'a OctetStringRef,
+    pub secret_share: &'a OctetStringRef,
+    pub vk: Option<&'a OctetStringRef>,
 }
 
 #[derive(Clone, Sequence)]
@@ -23,15 +23,15 @@ pub struct ShoupVerificationKey<'a> {
 
 #[derive(Clone, Sequence)]
 pub struct ShoupVerifyShare<'a> {
-    pub share_index: OctetStringRef<'a>,
+    pub share_index: &'a OctetStringRef,
     pub public_share: UintRef<'a>,
 }
 
 #[derive(Clone, Sequence)]
 pub struct SignatureShareDer<'a> {
-    pub share_index: OctetStringRef<'a>,
+    pub share_index: &'a OctetStringRef,
     pub signature: UintRef<'a>,
-    pub proof: Option<OctetStringRef<'a>>,
+    pub proof: Option<&'a OctetStringRef>,
 }
 
 #[derive(Clone, Sequence)]
