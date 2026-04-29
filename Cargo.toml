@@ -14,8 +14,8 @@ sha2 = "0.10.9"
 rand = { version = "0.10.1", features = ["sys_rng", "chacha"] }
 rug = { version = "1.28.0", default-features = false, features = ["integer", "std"] }
 clap = { version = "4.5.50", features = ["derive"] }
-openssl = "0.10.74"
 der = { version = "0.8.0", features = ["derive", "alloc"] }
+crypto-primes = "0.7.0"
 
 [dev-dependencies]
 criterion = "0.8.2"

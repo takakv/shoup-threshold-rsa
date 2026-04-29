@@ -1,15 +1,15 @@
 use std::fs;
 use std::fs::File;
 use std::io::Write;
-use std::ops::{AddAssign, Sub};
+use std::ops::AddAssign;
 use std::path::Path;
 
 use crypto_bigint::modular::{BoxedMontyForm, BoxedMontyParams};
 use crypto_bigint::{BoxedUint, ConcatenatingMul, RandomMod, Resize};
+use crypto_primes::hazmat::{SetBits, SmallFactorsSieveFactory};
+use crypto_primes::{is_prime, sieve_and_find, Flavor};
 use der::asn1::{OctetStringRef, UintRef};
 use der::Encode;
-use openssl::bn::BigNum;
-use openssl::error::ErrorStack;
 use rsa::pkcs1::LineEnding;
 use rsa::pkcs8::EncodePublicKey;
 use rsa::{BigUint, RsaPublicKey};
@@ -19,10 +19,15 @@ use crate::ThresholdParameters;
 
 const PUB_EXP: u32 = u16::MAX as u32 + 2;
 
-fn gen_safe_prime(bits: i32) -> Result<BigNum, ErrorStack> {
-    let mut bn = BigNum::new()?;
-    bn.generate_prime(bits, true, None, None)?;
-    Ok(bn)
+fn gen_safe_prime(bit_length: u32) -> BoxedUint {
+    let flavor = Flavor::Safe;
+
+    let factory = SmallFactorsSieveFactory::new(flavor, bit_length, SetBits::TwoMsb).unwrap();
+    sieve_and_find(&mut rand::rng(), factory, |_rng, candidate| {
+        is_prime(flavor, candidate)
+    })
+    .unwrap()
+    .expect("failed to generate a safe prime")
 }
 
 pub fn generate(
@@ -33,19 +38,16 @@ pub fn generate(
     vk_dir: impl AsRef<Path>,
 ) {
     eprintln!("Generating {}-bit RSA key...", bits);
-    let prime_bits = (bits / 2) as i32;
+    let prime_bits = bits / 2;
 
-    let q_thread = std::thread::spawn(move || gen_safe_prime(prime_bits).unwrap());
-    let p = gen_safe_prime(prime_bits).unwrap();
+    let q_thread = std::thread::spawn(move || gen_safe_prime(prime_bits));
+    let p = gen_safe_prime(prime_bits);
     let q = q_thread.join().unwrap();
-
-    let p = BoxedUint::from_be_slice(&p.to_vec(), bits / 2).unwrap();
-    let q = BoxedUint::from_be_slice(&q.to_vec(), bits / 2).unwrap();
 
     assert_ne!(&p, &q);
 
-    let pp = p.clone().sub(BoxedUint::one()).shr(1);
-    let qq = q.clone().sub(BoxedUint::one()).shr(1);
+    let pp = p.wrapping_sub(&BoxedUint::one()).shr(1);
+    let qq = q.wrapping_sub(&BoxedUint::one()).shr(1);
 
     let n = p.concatenating_mul(&q).to_odd().unwrap();
     let m = pp.concatenating_mul(&qq).to_odd().unwrap();
