@@ -3,6 +3,10 @@ name = "shoup-threshold-rsa"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "shoup"
+path = "src/main.rs"
+
 [dependencies]
 crypto-bigint = { version = "0.7.3", features = ["alloc"] }
 rsa = { version = "0.9.8" }
