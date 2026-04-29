@@ -3,7 +3,7 @@ use std::ops::{Mul, MulAssign};
 
 use crypto_bigint::modular::BoxedMontyForm;
 use crypto_bigint::{BoxedUint, Word};
-use rand::TryRngCore;
+use rand::TryRng;
 use rug::integer::Order;
 use rug::Integer;
 use sha2::Sha256;
@@ -16,7 +16,7 @@ use crate::{
     KeyShare, PublicParameters, ShareProof, SignatureShare, ThresholdParameters, VerifyShare,
 };
 
-pub fn gen_signature_share<R: TryRngCore>(
+pub fn gen_signature_share<R: TryRng>(
     key_share: &KeyShare,
     pub_params: &PublicParameters,
     msg: &[u8],
@@ -46,7 +46,7 @@ pub fn gen_signature_share<R: TryRngCore>(
     (signature.retrieve(), proof)
 }
 
-pub fn combine_shares<R: TryRngCore>(
+pub fn combine_shares<R: TryRng>(
     shares: &[SignatureShare],
     msg: &[u8],
     pub_params: &PublicParameters,
@@ -133,7 +133,7 @@ pub fn combine_shares<R: TryRngCore>(
     i2osp(signature, pub_params.byte_len)
 }
 
-pub fn threshold_sign<R: TryRngCore>(
+pub fn threshold_sign<R: TryRng>(
     key_shares: &[KeyShare],
     pub_params: &PublicParameters,
     msg: &[u8],

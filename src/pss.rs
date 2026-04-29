@@ -1,4 +1,4 @@
-use rand::TryRngCore;
+use rand::TryRng;
 use rsa::signature::digest::{Digest, FixedOutputReset};
 
 fn mgf1_xor_mask<D>(out: &mut [u8], seed: &[u8])
@@ -33,7 +33,7 @@ where
 pub fn emsa_pss_encode<D, R>(message: &[u8], em_bits: usize, rng: &mut R) -> Vec<u8>
 where
     D: Digest + FixedOutputReset,
-    R: TryRngCore,
+    R: TryRng,
 {
     let h_len = <D as Digest>::output_size();
     let s_len = h_len; // Use the same hash function for the message and MGF1.

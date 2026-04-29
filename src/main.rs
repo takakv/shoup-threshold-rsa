@@ -3,9 +3,8 @@ use std::{fs, path::PathBuf};
 use clap::{Parser, Subcommand};
 use der::asn1::{OctetStringRef, UintRef};
 use der::Encode;
-use rand::rand_core::OsRng;
+use rand::rngs::{ChaCha8Rng, SysRng};
 use rand::SeedableRng;
-use rand_chacha::ChaCha8Rng;
 use sha2::{Digest, Sha256};
 
 mod arithmetic;
@@ -199,7 +198,7 @@ fn main() {
                 &msg,
                 &parameters,
                 false,
-                &mut OsRng,
+                &mut SysRng,
             );
             fs::write(outfile, &signature).expect("Failed to write signature to file");
         }
