@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-crypto-bigint = { version = "0.7.3", features = ["alloc", "rand_core"] }
+crypto-bigint = { version = "0.7.3", features = ["alloc"] }
 rsa = { version = "0.9.8" }
 sha2 = "0.10.9"
 rand = { version = "0.10.1", features = ["sys_rng", "chacha"] }
@@ -14,7 +14,7 @@ openssl = "0.10.74"
 der = { version = "0.8.0", features = ["derive", "alloc"] }
 
 [dev-dependencies]
-criterion = "0.7.0"
+criterion = "0.8.2"
 
 [[bench]]
 name = "rug_integers"
