@@ -9,8 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 crypto-bigint = { version = "0.7.3", features = ["alloc"] }
-rsa = { version = "0.9.8" }
-sha2 = "0.10.9"
+rsa = { version = "0.9.8", features = ["sha2"] }
 rand = { version = "0.10.1", features = ["sys_rng", "chacha"] }
 rug = { version = "1.28.0", default-features = false, features = ["integer", "std"] }
 clap = { version = "4.5.50", features = ["derive"] }

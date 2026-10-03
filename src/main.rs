@@ -9,7 +9,7 @@ use der::Encode;
 use der::asn1::{OctetStringRef, UintRef};
 use rand::SeedableRng;
 use rand::rngs::{ChaCha8Rng, SysRng};
-use sha2::{Digest, Sha256};
+use rsa::sha2::{Digest, Sha256};
 
 use shoup_threshold_rsa::ThresholdParameters;
 use shoup_threshold_rsa::asn1::{CorrectnessProofDer, ShoupVerificationKey, SignatureShareDer};

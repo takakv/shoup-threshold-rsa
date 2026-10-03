@@ -6,10 +6,10 @@ use rand::rngs::ChaCha8Rng;
 use rsa::RsaPublicKey;
 use rsa::pkcs8::DecodePublicKey;
 use rsa::pss::{Signature, VerifyingKey};
+use rsa::sha2::Sha256;
 use rsa::signature::Verifier;
 use rug::Integer;
 use rug::integer::Order;
-use sha2::Sha256;
 
 use shoup_threshold_rsa::loaders::{load_key_share, load_pub_params};
 use shoup_threshold_rsa::signature::{combine_shares, gen_signature_share, threshold_sign};

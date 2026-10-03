@@ -1,9 +1,9 @@
 use crypto_bigint::modular::BoxedMontyForm;
 use crypto_bigint::{BoxedUint, ConcatenatingMul, RandomBits, Word};
 use rand::rngs::SysRng;
+use rsa::sha2::{Digest, Sha256};
 use rug::integer::Order;
 use rug::Integer;
-use sha2::{Digest, Sha256};
 
 use crate::{PublicParameters, ShareProof};
 

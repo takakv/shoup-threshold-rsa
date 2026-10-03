@@ -4,9 +4,9 @@ use std::ops::{Mul, MulAssign};
 use crypto_bigint::modular::BoxedMontyForm;
 use crypto_bigint::{BoxedUint, ConcatenatingMul, Word};
 use rand::TryRng;
+use rsa::sha2::Sha256;
 use rug::Integer;
 use rug::integer::Order;
-use sha2::Sha256;
 
 use crate::arithmetic::{shoup_0_coefficient, shoup_delta};
 use crate::convert::{i2osp, os2ip_montgomery};
