@@ -1,35 +1,22 @@
 use std::{fs, path::PathBuf};
 
 use clap::{Parser, Subcommand};
-use der::asn1::{OctetStringRef, UintRef};
+use crypto_bigint::BoxedUint;
+use crypto_bigint::modular::BoxedMontyForm;
+use der::Decode;
 use der::Encode;
-use rand::rngs::{ChaCha8Rng, SysRng};
+use der::asn1::{OctetStringRef, UintRef};
 use rand::SeedableRng;
+use rand::rngs::{ChaCha8Rng, SysRng};
 use sha2::{Digest, Sha256};
 
-mod arithmetic;
-mod asn1;
-mod convert;
-mod generate;
-mod loaders;
-mod pss;
-mod signature;
-mod types;
-mod zkp;
-
-pub use types::{
-    KeyShare, PublicParameters, ShareProof, SignatureShare, ThresholdParameters, VerifyShare,
-};
-
-use asn1::{CorrectnessProofDer, ShoupVerificationKey, SignatureShareDer};
-use crypto_bigint::modular::BoxedMontyForm;
-use crypto_bigint::BoxedUint;
-use der::Decode;
-use generate::generate;
-use loaders::{
+use shoup_threshold_rsa::ThresholdParameters;
+use shoup_threshold_rsa::asn1::{CorrectnessProofDer, ShoupVerificationKey, SignatureShareDer};
+use shoup_threshold_rsa::generate::generate;
+use shoup_threshold_rsa::loaders::{
     load_key_share, load_key_shares, load_pub_params, load_signature_shares, load_verify_shares,
 };
-use signature::{combine_shares, gen_signature_share, threshold_sign};
+use shoup_threshold_rsa::signature::{combine_shares, gen_signature_share, threshold_sign};
 
 #[derive(Parser, Debug)]
 struct Cli {
