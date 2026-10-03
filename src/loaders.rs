@@ -1,56 +1,101 @@
 use std::collections::HashMap;
 use std::fs;
+use std::path::{Path, PathBuf};
 
 use crypto_bigint::modular::{BoxedMontyForm, BoxedMontyParams};
-use crypto_bigint::{BitOps, BoxedUint, Word};
+use crypto_bigint::{BitOps, BoxedUint, Odd, Word};
 use der::Decode;
 use rsa::{pkcs8::DecodePublicKey, traits::PublicKeyParts};
-use rug::{integer::Order, Integer};
+use rug::{Integer, integer::Order};
 
 use crate::asn1::{
     CorrectnessProofDer, ShamirSecretShare, ShoupKeyShare, ShoupVerificationKey, ShoupVerifyShare,
     SignatureShareDer,
 };
 use crate::types::ShareProof;
-use crate::{KeyShare, PublicParameters, SignatureShare, VerifyShare};
+use crate::{Error, KeyShare, PublicParameters, Result, SignatureShare, VerifyShare};
 
-pub fn load_pub_params(pem_path: impl AsRef<std::path::Path>) -> PublicParameters {
+fn malformed(path: &Path, reason: &'static str) -> Error {
+    Error::Malformed {
+        path: path.to_owned(),
+        reason,
+    }
+}
+
+fn read(path: &Path) -> Result<Vec<u8>> {
+    fs::read(path).map_err(|source| Error::Io {
+        action: "read",
+        path: path.to_owned(),
+        source,
+    })
+}
+
+fn decode_der<'a, T: Decode<'a, Error = der::Error>>(
+    data: &'a [u8],
+    path: &Path,
+    kind: &'static str,
+) -> Result<T> {
+    T::from_der(data).map_err(|source| Error::Der {
+        path: path.to_owned(),
+        kind,
+        source,
+    })
+}
+
+fn files_in(dir: &Path) -> Result<Vec<PathBuf>> {
+    let io_err = |source: std::io::Error| Error::Io {
+        action: "list directory",
+        path: dir.to_owned(),
+        source,
+    };
+
+    let mut files = Vec::new();
+    for entry in fs::read_dir(dir).map_err(io_err)? {
+        let path = entry.map_err(io_err)?.path();
+        if path.is_file() {
+            files.push(path);
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
+fn odd_modulus(n: &Integer, path: &Path) -> Result<Odd<BoxedUint>> {
+    BoxedUint::from_words(n.to_digits::<Word>(Order::Lsf))
+        .to_odd()
+        .into_option()
+        .ok_or_else(|| malformed(path, "RSA modulus is not odd"))
+}
+
+pub fn load_pub_params(pem_path: impl AsRef<Path>) -> Result<PublicParameters> {
+    let path = pem_path.as_ref();
     let pub_key =
-        rsa::RsaPublicKey::read_public_key_pem_file(pem_path).expect("Failed to read public key");
+        rsa::RsaPublicKey::read_public_key_pem_file(path).map_err(|source| Error::PublicKey {
+            path: path.to_owned(),
+            source,
+        })?;
 
     let n = Integer::from_digits(&pub_key.n().to_bytes_be(), Order::Msf);
     let e = Integer::from_digits(&pub_key.e().to_bytes_be(), Order::Msf);
 
-    let n_words = n.to_digits::<Word>(Order::Lsf);
-    let n_odd = BoxedUint::from_words(n_words)
-        .to_odd()
-        .expect("RSA modulus is not odd");
+    let n_odd = odd_modulus(&n, path)?;
     let byte_len = n_odd.bytes_precision();
     let monty_params = BoxedMontyParams::new(n_odd);
 
-    PublicParameters {
+    Ok(PublicParameters {
         n,
         e,
         byte_len,
         monty_params,
-    }
+    })
 }
 
 pub fn load_key_share(
-    path: impl AsRef<std::path::Path>,
-) -> (KeyShare, PublicParameters, Option<BoxedMontyForm>, u16) {
+    path: impl AsRef<Path>,
+) -> Result<(KeyShare, PublicParameters, Option<BoxedMontyForm>, u16)> {
     let path = path.as_ref();
-    let data = fs::read(path).unwrap_or_else(|e| {
-        eprintln!("error: failed to read key share {}: {}", path.display(), e);
-        std::process::exit(1);
-    });
-    let shamir = ShamirSecretShare::from_der(&data).unwrap_or_else(|_| {
-        eprintln!(
-            "error: {} is not a valid or well-formed key share",
-            path.display()
-        );
-        std::process::exit(1);
-    });
+    let data = read(path)?;
+    let shamir: ShamirSecretShare = decode_der(&data, path, "key share")?;
 
     let bytes = shamir.share_index.as_bytes();
     let mut buf = [0u8; 2];
@@ -62,22 +107,13 @@ pub fn load_key_share(
     buf[2 - count_bytes.len()..].copy_from_slice(count_bytes);
     let total_shares = u16::from_be_bytes(buf);
 
-    let rsa_share = ShoupKeyShare::from_der(shamir.secret_share.as_bytes()).unwrap_or_else(|e| {
-        eprintln!(
-            "error: {} contains a malformed RSA share: {}",
-            path.display(),
-            e
-        );
-        std::process::exit(1);
-    });
+    let rsa_share: ShoupKeyShare =
+        decode_der(shamir.secret_share.as_bytes(), path, "RSA key share")?;
 
     let n = Integer::from_digits(rsa_share.n.as_bytes(), Order::Msf);
     let e = Integer::from_digits(rsa_share.e.as_bytes(), Order::Lsf);
 
-    let n_words = n.to_digits::<Word>(Order::Lsf);
-    let n_odd = BoxedUint::from_words(n_words)
-        .to_odd()
-        .expect("RSA modulus is not odd");
+    let n_odd = odd_modulus(&n, path)?;
     let bits_precision = 8 * n_odd.bytes_precision() as u32;
 
     let monty_params = BoxedMontyParams::new(n_odd);
@@ -96,77 +132,33 @@ pub fn load_key_share(
     };
 
     let d = BoxedUint::from_be_slice(rsa_share.d.as_bytes(), bits_precision)
-        .expect("Failed to build BoxedUint");
+        .map_err(|_| malformed(path, "secret share is larger than the modulus"))?;
 
-    (KeyShare { index, d }, params, vk, total_shares)
+    Ok((KeyShare { index, d }, params, vk, total_shares))
 }
 
-pub fn load_key_shares<I>(entries: I) -> (Vec<KeyShare>, PublicParameters)
-where
-    I: IntoIterator<Item = std::io::Result<fs::DirEntry>>,
-{
+pub fn load_key_shares(dir: impl AsRef<Path>) -> Result<(Vec<KeyShare>, PublicParameters)> {
+    let dir = dir.as_ref();
     let mut key_shares = Vec::new();
-    let mut params: Option<PublicParameters> = None;
-    let mut bits_precision = 0;
+    let mut params = None;
 
-    for entry in entries {
-        let entry = entry.expect("Invalid directory entry");
-        let path = entry.path();
-
-        if !path.is_file() {
-            continue;
-        }
-
-        let data = fs::read(&path).expect("Failed to read share file");
-        let shamir_share =
-            ShamirSecretShare::from_der(&data).expect("Failed to decode Shamir secret share");
-
-        let bytes = shamir_share.share_index.as_bytes();
-        let mut buf = [0u8; 2];
-        let start = 2 - bytes.len();
-        buf[start..].copy_from_slice(bytes);
-        let index = u16::from_be_bytes(buf) + 1;
-
-        let rsa_share = ShoupKeyShare::from_der(shamir_share.secret_share.as_bytes())
-            .expect("Failed to decode RSA share");
-
-        if params.is_none() {
-            let n = Integer::from_digits(rsa_share.n.as_bytes(), Order::Msf);
-            let e = Integer::from_digits(rsa_share.e.as_bytes(), Order::Lsf);
-
-            let n_words = n.to_digits::<Word>(Order::Lsf);
-            let n_odd = BoxedUint::from_words(n_words)
-                .to_odd()
-                .expect("RSA modulus is not odd");
-
-            bits_precision = 8 * n_odd.bytes_precision() as u32;
-
-            params = Some(PublicParameters {
-                n,
-                e,
-                byte_len: n_odd.bytes_precision(),
-                monty_params: BoxedMontyParams::new(n_odd),
-            });
-        }
-
-        let d = BoxedUint::from_be_slice(rsa_share.d.as_bytes(), bits_precision)
-            .expect("Failed to build BoxedUint");
-        key_shares.push(KeyShare { index, d });
+    for path in files_in(dir)? {
+        let (key_share, share_params, _, _) = load_key_share(&path)?;
+        params.get_or_insert(share_params);
+        key_shares.push(key_share);
     }
 
-    let params = params.expect("Could not parse RSA public parameters");
-    (key_shares, params)
+    let params = params.ok_or_else(|| Error::NoShares {
+        dir: dir.to_owned(),
+    })?;
+    Ok((key_shares, params))
 }
 
-pub fn load_signature_shares(dir: impl AsRef<std::path::Path>) -> Vec<SignatureShare> {
+pub fn load_signature_shares(dir: impl AsRef<Path>) -> Result<Vec<SignatureShare>> {
     let mut shares = Vec::new();
-    for entry in fs::read_dir(dir).expect("Failed to read signature shares dir") {
-        let path = entry.unwrap().path();
-        if !path.is_file() {
-            continue;
-        }
-        let data = fs::read(&path).expect("Failed to read signature share");
-        let der = SignatureShareDer::from_der(&data).expect("Failed to decode signature share");
+    for path in files_in(dir.as_ref())? {
+        let data = read(&path)?;
+        let der: SignatureShareDer = decode_der(&data, &path, "signature share")?;
 
         let bytes = der.share_index.as_bytes();
         let mut buf = [0u8; 2];
@@ -192,25 +184,17 @@ pub fn load_signature_shares(dir: impl AsRef<std::path::Path>) -> Vec<SignatureS
             proof,
         });
     }
-    shares
+    Ok(shares)
 }
 
-pub fn load_verify_shares<I>(entries: I, mp: &BoxedMontyParams) -> HashMap<u16, VerifyShare>
-where
-    I: IntoIterator<Item = std::io::Result<fs::DirEntry>>,
-{
+pub fn load_verify_shares(
+    dir: impl AsRef<Path>,
+    mp: &BoxedMontyParams,
+) -> Result<HashMap<u16, VerifyShare>> {
     let mut verify_shares = HashMap::new();
-    for entry in entries {
-        let entry = entry.expect("Invalid directory entry");
-        let path = entry.path();
-
-        if !path.is_file() {
-            continue;
-        }
-
-        let data = fs::read(&path).expect("Failed to read share file");
-        let verify_share =
-            ShoupVerifyShare::from_der(&data).expect("Failed to decode verification share");
+    for path in files_in(dir.as_ref())? {
+        let data = read(&path)?;
+        let verify_share: ShoupVerifyShare = decode_der(&data, &path, "verification share")?;
 
         let bytes = verify_share.share_index.as_bytes();
         let mut buf = [0u8; 2];
@@ -218,14 +202,13 @@ where
         buf[start..].copy_from_slice(bytes);
         let index = u16::from_be_bytes(buf) + 1;
 
-        let vk = BoxedMontyForm::new(
+        let v_i =
             BoxedUint::from_be_slice(verify_share.public_share.as_bytes(), mp.bits_precision())
-                .unwrap(),
-            mp,
-        );
+                .map_err(|_| malformed(&path, "verification share is larger than the modulus"))?;
+        let vk = BoxedMontyForm::new(v_i, mp);
 
         verify_shares.insert(index, VerifyShare { index, vk });
     }
 
-    verify_shares
+    Ok(verify_shares)
 }

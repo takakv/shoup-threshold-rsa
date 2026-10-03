@@ -1,21 +1,19 @@
 use std::fs;
-use std::fs::File;
-use std::io::Write;
 use std::ops::AddAssign;
 use std::path::Path;
 
 use crypto_bigint::modular::{BoxedMontyForm, BoxedMontyParams};
 use crypto_bigint::{BoxedUint, ConcatenatingMul, RandomMod, Resize};
 use crypto_primes::hazmat::{SetBits, SmallFactorsSieveFactory};
-use crypto_primes::{is_prime, sieve_and_find, Flavor};
-use der::asn1::{OctetStringRef, UintRef};
+use crypto_primes::{Flavor, is_prime, sieve_and_find};
 use der::Encode;
+use der::asn1::{OctetStringRef, UintRef};
 use rsa::pkcs1::LineEnding;
 use rsa::pkcs8::EncodePublicKey;
 use rsa::{BigUint, RsaPublicKey};
 
 use crate::asn1::{ShamirSecretShare, ShoupKeyShare, ShoupVerificationKey, ShoupVerifyShare};
-use crate::ThresholdParameters;
+use crate::{Error, Result, ThresholdParameters};
 
 const PUB_EXP: u32 = u16::MAX as u32 + 2;
 
@@ -30,13 +28,29 @@ fn gen_safe_prime(bit_length: u32) -> BoxedUint {
     .expect("failed to generate a safe prime")
 }
 
+fn write(path: &Path, data: impl AsRef<[u8]>) -> Result<()> {
+    fs::write(path, data).map_err(|source| Error::Io {
+        action: "write",
+        path: path.to_owned(),
+        source,
+    })
+}
+
+fn create_dir(path: &Path) -> Result<()> {
+    fs::create_dir_all(path).map_err(|source| Error::Io {
+        action: "create directory",
+        path: path.to_owned(),
+        source,
+    })
+}
+
 pub fn generate(
     bits: u32,
     params: &ThresholdParameters,
     pub_path: impl AsRef<Path>,
     shares_dir: impl AsRef<Path>,
     vk_dir: impl AsRef<Path>,
-) {
+) -> Result<()> {
     eprintln!("Generating {}-bit RSA key...", bits);
     let prime_bits = bits / 2;
 
@@ -61,13 +75,14 @@ pub fn generate(
     let v = BoxedUint::random_mod_vartime(&mut rand::rng(), n.as_nz_ref());
     let v = v.mul_mod(&v, n.as_nz_ref());
 
-    RsaPublicKey::new(
+    let pub_pem = RsaPublicKey::new(
         BigUint::from_slice_native(n.as_words()),
         BigUint::from(PUB_EXP),
     )
     .unwrap()
-    .write_public_key_pem_file(pub_path, LineEnding::LF)
-    .expect("Failed to write public key");
+    .to_public_key_pem(LineEnding::LF)
+    .expect("a valid RSA public key can be PEM-encoded");
+    write(pub_path.as_ref(), pub_pem)?;
 
     let svk_bytes = v.to_be_bytes();
     let svk_der = ShoupVerificationKey {
@@ -76,10 +91,7 @@ pub fn generate(
     .to_der()
     .unwrap();
 
-    let mut svk_file = File::create("vk.der").unwrap();
-    svk_file
-        .write_all(&svk_der)
-        .expect("Failed to write share verification");
+    write(Path::new("vk.der"), &svk_der)?;
 
     let monty_v = BoxedMontyForm::new(v, &mp_n);
 
@@ -98,8 +110,8 @@ pub fn generate(
 
     let shares_dir = shares_dir.as_ref();
     let vk_dir = vk_dir.as_ref();
-    fs::create_dir_all(shares_dir).expect("Failed to create shares dir");
-    fs::create_dir_all(vk_dir).expect("Failed to create vk dir");
+    create_dir(shares_dir)?;
+    create_dir(vk_dir)?;
 
     let n_bytes = n.to_be_bytes();
     let e_bytes = e.to_be_bytes();
@@ -155,14 +167,9 @@ pub fn generate(
         let share_filename = shares_dir.join(format!("share-{}.der", i));
         let verify_filename = vk_dir.join(format!("vk-share-{}.der", i));
 
-        let mut share_file = File::create(&share_filename).unwrap();
-        share_file
-            .write_all(&shamir.to_der().unwrap())
-            .expect("Failed to write share");
-
-        let mut verify_file = File::create(&verify_filename).unwrap();
-        verify_file
-            .write_all(&verify.to_der().unwrap())
-            .expect("Failed to write share verification");
+        write(&share_filename, shamir.to_der().unwrap())?;
+        write(&verify_filename, verify.to_der().unwrap())?;
     }
+
+    Ok(())
 }

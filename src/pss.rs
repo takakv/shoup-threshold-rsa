@@ -1,6 +1,8 @@
 use rand::TryRng;
 use rsa::signature::digest::{Digest, FixedOutputReset};
 
+use crate::{Error, Result};
+
 fn mgf1_xor_mask<D>(out: &mut [u8], seed: &[u8])
 where
     D: Digest + FixedOutputReset,
@@ -30,7 +32,7 @@ where
     }
 }
 
-pub fn emsa_pss_encode<D, R>(message: &[u8], em_bits: usize, rng: &mut R) -> Vec<u8>
+pub fn emsa_pss_encode<D, R>(message: &[u8], em_bits: usize, rng: &mut R) -> Result<Vec<u8>>
 where
     D: Digest + FixedOutputReset,
     R: TryRng,
@@ -49,14 +51,13 @@ where
 
     // 3. If emLen < hLen + sLen + 2, output "encoding error" and stop.
     if em_len < h_len + s_len + 2 {
-        panic!("encoding error");
+        return Err(Error::PssEncoding);
     }
 
     // 4. Generate a random octet string salt of length sLen; if sLen =
     //    0, then salt is the empty string.
     let mut salt = vec![0u8; s_len];
-    rng.try_fill_bytes(&mut salt)
-        .expect("Could not generate PSS salt");
+    rng.try_fill_bytes(&mut salt).map_err(|_| Error::PssSalt)?;
 
     // 5. Let
     //       M' = (0x)00 00 00 00 00 00 00 00 || mHash || salt;
@@ -91,5 +92,5 @@ where
     em[em_len - 1] = 0xBC;
 
     // 13. Output EM.
-    em
+    Ok(em)
 }

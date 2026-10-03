@@ -16,6 +16,8 @@ rug = { version = "1.28.0", default-features = false, features = ["integer", "st
 clap = { version = "4.5.50", features = ["derive"] }
 der = { version = "0.8.0", features = ["derive", "alloc"] }
 crypto-primes = "0.7.0"
+thiserror = "2.0.21"
+anyhow = "1.0.104"
 
 [dev-dependencies]
 criterion = "0.8.2"

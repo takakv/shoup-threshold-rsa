@@ -4,8 +4,8 @@ use std::ops::{Mul, MulAssign};
 use crypto_bigint::modular::BoxedMontyForm;
 use crypto_bigint::{BoxedUint, ConcatenatingMul, Word};
 use rand::TryRng;
-use rug::integer::Order;
 use rug::Integer;
+use rug::integer::Order;
 use sha2::Sha256;
 
 use crate::arithmetic::{shoup_0_coefficient, shoup_delta};
@@ -13,7 +13,8 @@ use crate::convert::{i2osp, os2ip_montgomery};
 use crate::pss::emsa_pss_encode;
 use crate::zkp::{prove, verify_proof};
 use crate::{
-    KeyShare, PublicParameters, ShareProof, SignatureShare, ThresholdParameters, VerifyShare,
+    Error, KeyShare, PublicParameters, Result, ShareProof, SignatureShare, ThresholdParameters,
+    VerifyShare,
 };
 
 pub fn gen_signature_share<R: TryRng>(
@@ -23,9 +24,9 @@ pub fn gen_signature_share<R: TryRng>(
     total_shares: u16,
     vk: Option<&BoxedMontyForm>,
     rng: &mut R,
-) -> (BoxedUint, Option<ShareProof>) {
+) -> Result<(BoxedUint, Option<ShareProof>)> {
     let em_bits = pub_params.n.significant_bits() - 1;
-    let em = emsa_pss_encode::<Sha256, R>(msg, em_bits as usize, rng);
+    let em = emsa_pss_encode::<Sha256, R>(msg, em_bits as usize, rng)?;
     let m = os2ip_montgomery(&em, pub_params.monty_params.clone());
 
     let delta = shoup_delta(total_shares as u32);
@@ -45,7 +46,7 @@ pub fn gen_signature_share<R: TryRng>(
         );
     }
 
-    (signature.retrieve(), proof)
+    Ok((signature.retrieve(), proof))
 }
 
 pub fn combine_shares<R: TryRng>(
@@ -55,11 +56,11 @@ pub fn combine_shares<R: TryRng>(
     params: &ThresholdParameters,
     vk_data: Option<(&BoxedMontyForm, &HashMap<u16, VerifyShare>)>,
     rng: &mut R,
-) -> Vec<u8> {
+) -> Result<Vec<u8>> {
     let n = &pub_params.n;
 
     let em_bits = n.significant_bits() - 1;
-    let em = emsa_pss_encode::<Sha256, R>(msg, em_bits as usize, rng);
+    let em = emsa_pss_encode::<Sha256, R>(msg, em_bits as usize, rng)?;
 
     let delta = shoup_delta(params.total_shares as u32);
 
@@ -105,13 +106,11 @@ pub fn combine_shares<R: TryRng>(
     };
 
     if valid_shares.len() < params.threshold as usize {
-        eprintln!(
-            "error: only {}/{} shares passed verification, below threshold of {}",
-            valid_shares.len(),
-            shares.len(),
-            params.threshold
-        );
-        std::process::exit(1);
+        return Err(Error::NotEnoughShares {
+            valid: valid_shares.len(),
+            provided: shares.len(),
+            threshold: params.threshold,
+        });
     }
 
     let m = Integer::from_digits(&em, Order::Msf);
@@ -132,7 +131,7 @@ pub fn combine_shares<R: TryRng>(
     let xb = m.pow_mod(&b, n).unwrap();
     let signature = (wa * xb).modulo(n);
 
-    i2osp(signature, pub_params.byte_len)
+    Ok(i2osp(signature, pub_params.byte_len))
 }
 
 pub fn threshold_sign<R: TryRng>(
@@ -142,9 +141,9 @@ pub fn threshold_sign<R: TryRng>(
     params: &ThresholdParameters,
     provable: bool,
     rng: &mut R,
-) -> Vec<u8> {
+) -> Result<Vec<u8>> {
     let em_bits = pub_params.n.significant_bits() - 1;
-    let em = emsa_pss_encode::<Sha256, R>(msg, em_bits as usize, rng);
+    let em = emsa_pss_encode::<Sha256, R>(msg, em_bits as usize, rng)?;
     let m = os2ip_montgomery(&em, pub_params.monty_params.clone());
 
     let n = Integer::from_digits(m.params().modulus().as_words(), Order::Lsf);
@@ -208,5 +207,5 @@ pub fn threshold_sign<R: TryRng>(
     let xb = m.pow_mod(&b, &n).unwrap();
 
     let signature = wa.mul(&xb).modulo(&n);
-    i2osp(signature, pub_params.byte_len)
+    Ok(i2osp(signature, pub_params.byte_len))
 }
