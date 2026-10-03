@@ -189,14 +189,8 @@ fn main() -> anyhow::Result<()> {
                 threshold,
                 total_shares,
             };
-            let signature = threshold_sign(
-                &key_shares,
-                &pub_params,
-                &msg,
-                &parameters,
-                false,
-                &mut SysRng,
-            )?;
+            let signature =
+                threshold_sign(&key_shares, &pub_params, &msg, &parameters, &mut SysRng)?;
             write_output(outfile, &signature)?;
         }
 

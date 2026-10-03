@@ -109,8 +109,7 @@ fn every_subset_signs() {
                 d: key_shares[i].d.clone(),
             })
             .collect();
-        let signed =
-            threshold_sign(&keys, &pub_params, MESSAGE, &PARAMS, false, &mut rng()).unwrap();
+        let signed = threshold_sign(&keys, &pub_params, MESSAGE, &PARAMS, &mut rng()).unwrap();
         if !is_valid_signature(signed) {
             failures.push(format!("threshold_sign {subset:?}"));
         }

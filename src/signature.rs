@@ -139,7 +139,6 @@ pub fn threshold_sign<R: TryRng>(
     pub_params: &PublicParameters,
     msg: &[u8],
     params: &ThresholdParameters,
-    provable: bool,
     rng: &mut R,
 ) -> Result<Vec<u8>> {
     let em_bits = pub_params.n.significant_bits() - 1;
@@ -160,11 +159,7 @@ pub fn threshold_sign<R: TryRng>(
             break;
         }
 
-        let signature = if provable {
-            m.pow(&key_share.d.clone().mul(&delta_boxed)).square()
-        } else {
-            m.pow(&key_share.d)
-        };
+        let signature = m.pow(&key_share.d.concatenating_mul(&delta_boxed)).square();
 
         // There are no more secrets here, so we switch to a more performant bignum library.
         // TODO: consider whether to use Rug for everything, and use `secure_pow_mod` for RSA.
@@ -186,19 +181,14 @@ pub fn threshold_sign<R: TryRng>(
 
     let mut w = Integer::from(1);
     for share in signature_shares {
-        let sc = shoup_0_coefficient(share.index, &lagrange_indices, &delta);
-        let sc = if provable { sc * 2 } else { sc };
+        let sc = shoup_0_coefficient(share.index, &lagrange_indices, &delta) * 2;
 
         let term = share.signature.pow_mod(&Integer::from(sc), &n).unwrap();
         w.mul_assign(&term);
         w.modulo_mut(&n);
     }
 
-    let shoup_exp = if provable {
-        delta.square().mul(4)
-    } else {
-        delta
-    };
+    let shoup_exp = delta.square() * 4u32;
 
     let (_, a, b) = shoup_exp.extended_gcd(pub_params.e.clone(), Integer::new());
 
