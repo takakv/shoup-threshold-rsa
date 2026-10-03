@@ -1,5 +1,4 @@
 use std::fs;
-use std::ops::AddAssign;
 use std::path::Path;
 
 use crypto_bigint::modular::{BoxedMontyForm, BoxedMontyParams};
@@ -26,6 +25,16 @@ fn gen_safe_prime(bit_length: u32) -> BoxedUint {
     })
     .unwrap()
     .expect("failed to generate a safe prime")
+}
+
+/// Evaluates `f(x) = a_0 + a_1·x + … + a_{k-1}·x^{k-1}` using Horner's method.
+fn f(a: &[BoxedMontyForm], x: &BoxedMontyForm) -> BoxedMontyForm {
+    let (last, rest) = a
+        .split_last()
+        .expect("polynomial must have at least one coefficient");
+    rest.iter()
+        .rev()
+        .fold(last.clone(), |acc, a_i| acc * x + a_i)
 }
 
 fn write(path: &Path, data: impl AsRef<[u8]>) -> Result<()> {
@@ -97,15 +106,12 @@ pub fn generate(
 
     let threshold = params.threshold as usize;
     let mut coefficients = Vec::with_capacity(threshold);
-    let mut indices = Vec::with_capacity(threshold);
 
     coefficients.push(BoxedMontyForm::new(d, &mp_m));
-    indices.push(BoxedUint::zero().resize(m.bits_precision()));
 
-    for i in 1..threshold as u32 {
+    for _ in 1..threshold {
         let tmp = BoxedUint::random_mod_vartime(&mut rand::rng(), m.as_nz_ref());
         coefficients.push(BoxedMontyForm::new(tmp, &mp_m));
-        indices.push(BoxedUint::from(i).resize(m.bits_precision()));
     }
 
     let shares_dir = shares_dir.as_ref();
@@ -119,16 +125,12 @@ pub fn generate(
     let n_ref = UintRef::new(&n_bytes).unwrap();
     let e_ref = UintRef::new(&e_bytes).unwrap();
 
-    let zero = BoxedMontyForm::zero(&mp_m);
     for i in 0..params.total_shares {
         // The actual 'x' coordinate ranges from [1, total] since P(0) = d, which must not leak.
         let mi = BoxedUint::from(i as u32 + 1).resize(m.bits_precision());
         let mi = BoxedMontyForm::new(mi, &mp_m);
 
-        let mut sum = zero.clone();
-        for (idx, coeff) in indices.iter().zip(coefficients.iter()) {
-            sum.add_assign(&mi.pow(idx).mul(coeff));
-        }
+        let sum = f(&coefficients, &mi);
 
         let index_bytes = i.to_be_bytes();
         let share_index = OctetStringRef::new(&index_bytes).unwrap();
