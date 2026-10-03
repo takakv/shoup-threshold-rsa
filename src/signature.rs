@@ -148,7 +148,6 @@ pub fn threshold_sign<R: TryRng>(
     let n = Integer::from_digits(m.params().modulus().as_words(), Order::Lsf);
 
     let delta = shoup_delta(params.total_shares as u32);
-    let delta_boxed = BoxedUint::from_words(delta.to_digits::<Word>(Order::Msf));
 
     let mut signature_shares = Vec::with_capacity(key_shares.len());
     let mut lagrange_indices = Vec::with_capacity(key_shares.len());
@@ -159,7 +158,11 @@ pub fn threshold_sign<R: TryRng>(
             break;
         }
 
-        let signature = m.pow(&key_share.d.concatenating_mul(&delta_boxed)).square();
+        // For efficiency, instead of computing x^(2Δs_i) for every share like in the paper (eq 4),
+        // we leave out the Δ and account for it in e' at the end. We can do this since all the
+        // shares are computed under our control, and so we have no need for the proofs of
+        // correctness.
+        let signature = m.pow(&key_share.d).square();
 
         // There are no more secrets here, so we switch to a more performant bignum library.
         // TODO: consider whether to use Rug for everything, and use `secure_pow_mod` for RSA.
@@ -188,7 +191,9 @@ pub fn threshold_sign<R: TryRng>(
         w.modulo_mut(&n);
     }
 
-    let shoup_exp = delta.square() * 4u32;
+    // Instead of e' = 4Δ^2 like in the paper (eq 6), we use e' = 4Δ, since we left the Δ out of
+    // the signature share computations.
+    let shoup_exp = delta * 4u32;
 
     let (_, a, b) = shoup_exp.extended_gcd(pub_params.e.clone(), Integer::new());
 
