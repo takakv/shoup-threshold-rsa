@@ -5,7 +5,7 @@ pub fn shoup_delta(f: u32) -> rug::Integer {
     rug::Integer::factorial(f).complete()
 }
 
-fn lagrange_0_coefficient(current: i32, indices: &[i32]) -> rug::Integer {
+fn lagrange_0_coefficient(current: i32, indices: &[i32]) -> (rug::Integer, rug::Integer) {
     let mut nominator = rug::Integer::from(1);
     let mut denominator = rug::Integer::from(1);
 
@@ -18,7 +18,8 @@ fn lagrange_0_coefficient(current: i32, indices: &[i32]) -> rug::Integer {
         denominator.mul_assign(index - current);
     }
 
-    nominator.div_exact(&denominator)
+    // Nom/denom is not necessarily an integer, but we always need integers.
+    (nominator, denominator)
 }
 
 pub fn shoup_0_coefficient(
@@ -26,5 +27,6 @@ pub fn shoup_0_coefficient(
     indices: &[i32],
     shoup_delta: &rug::Integer,
 ) -> rug::Integer {
-    shoup_delta * lagrange_0_coefficient(current as i32, indices)
+    let (nominator, denominator) = lagrange_0_coefficient(current as i32, indices);
+    (shoup_delta * nominator).div_exact(&denominator)
 }
